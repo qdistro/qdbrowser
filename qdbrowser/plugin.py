@@ -150,6 +150,14 @@ class PluginManager:
                 # that import names from it don't get a stale shell.
                 sys.modules.pop(full_name, None)
                 raise
+        # Ensure the parent package has a child attribute pointing at
+        # the loaded submodule. Python's normal import machinery does
+        # this automatically when you write ``import a.b``; the
+        # spec_from_file_location path skips the parent-attribute
+        # write, which breaks anything that walks the package via
+        # ``getattr`` — e.g. pytest's ``monkeypatch.setattr("a.b.c")``
+        # which calls ``getattr(a, 'b')`` rather than re-importing.
+        setattr(qdbrowser.plugins, name, module)
 
         instances = []
         base_classes = (Plugin, SidePanelProvider, UrlInterceptor,
