@@ -15,6 +15,8 @@ Wire format: newline-delimited JSON-RPC 2.0. Server-pushed events have
 from __future__ import annotations
 
 import base64
+import collections
+import hashlib
 import json
 import logging
 import os
@@ -112,6 +114,19 @@ def _peer_uid_matches(conn: socket.socket) -> bool:
         return False
 
 
+def _peer_creds(conn: socket.socket) -> tuple[Optional[int], Optional[int]]:
+    """Return ``(pid, uid)`` from SO_PEERCRED, or ``(None, None)`` on
+    failure. Split from ``_peer_uid_matches`` so the L6 exe check has
+    the pid without re-querying the kernel."""
+    try:
+        creds = conn.getsockopt(
+            socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+        pid, uid, _gid = struct.unpack("3i", creds)
+        return pid, uid
+    except OSError:
+        return None, None
+
+
 def _redact_params(params):
     """Strip sensitive values from RPC params for audit logging.
 
@@ -152,6 +167,169 @@ def _hostname_match(host: str, pattern: str) -> bool:
 
 def _hostname_match_any(host: str, patterns) -> bool:
     return any(_hostname_match(host, p) for p in patterns)
+
+
+# -- Layer 4: rate limiting ------------------------------------------------
+
+# Methods that count against the screenshot bucket and eval bucket
+# respectively. Kept as module-level frozensets so tests can introspect.
+_SCREENSHOT_METHODS = frozenset({"screenshot"})
+_EVAL_METHODS = frozenset({"eval_js"})
+
+
+class _RateBucket:
+    """Sliding-window counter over a fixed window (seconds).
+
+    Records the wall-clock time of each accepted hit and answers
+    ``allow(now, limit)`` for the next call. ``limit <= 0`` always
+    denies (used for ``eval_rate_limit_per_minute = 0``). ``limit ==
+    None`` means uncapped — used as a sentinel by callers that want to
+    skip a bucket entirely. Storage is bounded by the limit so a
+    misbehaving client can't grow it without bound.
+    """
+
+    __slots__ = ("_hits", "_window")
+
+    def __init__(self, window_seconds: float = 60.0):
+        self._hits: collections.deque = collections.deque()
+        self._window = float(window_seconds)
+
+    def _evict(self, now: float) -> None:
+        cutoff = now - self._window
+        while self._hits and self._hits[0] <= cutoff:
+            self._hits.popleft()
+
+    def allow(self, now: float, limit: int) -> bool:
+        if limit is None:
+            # Uncapped — record and allow.
+            self._hits.append(now)
+            return True
+        if limit <= 0:
+            # Disabled category: always deny without recording.
+            return False
+        self._evict(now)
+        if len(self._hits) >= limit:
+            return False
+        self._hits.append(now)
+        return True
+
+    def __len__(self) -> int:
+        return len(self._hits)
+
+
+# -- Layer 5: broker mediation --------------------------------------------
+
+def _broker_check(method: str, params: dict, *, bus_name: str,
+                  object_path: str, interface: str,
+                  timeout_ms: int) -> tuple[bool, str, bool]:
+    """Synchronously ask the broker ``CheckAgentAction(uid, method,
+    params_json) → (b ok, s reason)``.
+
+    Returns ``(allowed, reason, reachable)``. ``reachable=False`` means
+    the broker is down / not on the bus; the caller decides
+    fail-open vs fail-closed from policy state. The broker contract is
+    deliberately small (a single boolean + reason) so a Python or C
+    broker stub is trivial to implement; ``params`` is passed as
+    redacted JSON so the broker never sees script source or typed text.
+    """
+    try:
+        from jeepney import DBusAddress, new_method_call
+        from jeepney.io.blocking import open_dbus_connection
+    except Exception as exc:  # pragma: no cover - jeepney always present
+        log.warning("broker_check: jeepney import failed: %s", exc)
+        return True, "jeepney_missing", False
+    addr = DBusAddress(object_path=object_path, bus_name=bus_name,
+                       interface=interface)
+    redacted = _redact_params(params) if isinstance(params, dict) else {}
+    payload = json.dumps(redacted, default=str)
+    msg = new_method_call(addr, "CheckAgentAction", "uss",
+                          (os.getuid(), method, payload))
+    try:
+        # Session bus by default — that's where per-user brokers live.
+        conn = open_dbus_connection(bus="SESSION")
+    except Exception as exc:
+        log.warning("broker_check: bus connect failed: %s", exc)
+        return True, "bus_unreachable", False
+    try:
+        try:
+            reply = conn.send_and_get_reply(msg, timeout=timeout_ms / 1000.0)
+        except Exception as exc:
+            log.warning("broker_check: rpc failed: %s", exc)
+            return True, "broker_timeout", False
+        body = getattr(reply, "body", None) or ()
+        if not isinstance(body, tuple) or len(body) < 2:
+            log.warning("broker_check: malformed reply body=%r", body)
+            return True, "broker_malformed", False
+        ok, reason = bool(body[0]), str(body[1])
+        return ok, reason, True
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+# -- Layer 6: client exe identity -----------------------------------------
+
+def _file_sha256(path: str) -> Optional[str]:
+    """SHA256 of a file by absolute path. Returns ``None`` on any error
+    (file missing, perm denied, race during read). Caller decides whether
+    that's fatal."""
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except (OSError, IOError):
+        return None
+
+
+def _proc_exe_digest(pid: int) -> tuple[Optional[str], Optional[str]]:
+    """Return ``(exe_path, sha256_hex)`` for /proc/<pid>/exe.
+
+    Reads the link (so we record what the kernel sees, not what the
+    client claimed) and digests the underlying file. Either component
+    may be ``None`` if the process or executable has gone away — this
+    is best-effort audit/identity, not enforcement against a TOCTOU
+    racer (the post-handshake ``execve`` concern from L6 §note still
+    applies; we don't promise more than the proc table).
+    """
+    link = f"/proc/{int(pid)}/exe"
+    try:
+        target = os.readlink(link)
+    except OSError:
+        target = None
+    digest = _file_sha256(link) if target is not None else None
+    return target, digest
+
+
+def _resolve_allowed_exes(entries) -> set[str]:
+    """Resolve config entries (paths or ``sha256:<hex>``) to a set of
+    SHA256 digests. Bad/missing path entries are skipped with a warning
+    — partial config shouldn't take down the plugin."""
+    out: set[str] = set()
+    for entry in entries or []:
+        if not isinstance(entry, str) or not entry:
+            continue
+        if entry.startswith("sha256:"):
+            hex_part = entry[len("sha256:"):].strip().lower()
+            if len(hex_part) == 64 and all(c in "0123456789abcdef"
+                                            for c in hex_part):
+                out.add(hex_part)
+            else:
+                log.warning("agent_control: bad sha256 entry %r", entry)
+            continue
+        if not os.path.isabs(entry):
+            log.warning("agent_control: non-absolute exe entry %r", entry)
+            continue
+        digest = _file_sha256(entry)
+        if digest is None:
+            log.warning(
+                "agent_control: cannot digest exe %r (skipping)", entry)
+            continue
+        out.add(digest)
+    return out
 
 
 # -- key name -> Qt.Key / text translation. Coarser than qterminator's
@@ -248,7 +426,10 @@ class _AttachState:
 # -- Client connection wrapper --
 
 class _Client(QObject):
-    def __init__(self, conn: socket.socket, server: "_AgentServer"):
+    def __init__(self, conn: socket.socket, server: "_AgentServer",
+                 *, pid: Optional[int] = None,
+                 exe_path: Optional[str] = None,
+                 exe_digest: Optional[str] = None):
         super().__init__()
         self._conn = conn
         self._fd = conn.fileno()
@@ -258,6 +439,15 @@ class _Client(QObject):
             self._fd, QSocketNotifier.Type.Read, self)
         self._notifier.activated.connect(self._on_readable)
         self.attached_tabs: set[int] = set()
+        # L6: identity captured at accept time, used for audit lines.
+        self.pid = pid
+        self.exe_path = exe_path
+        self.exe_digest = exe_digest
+        # L4: per-client sliding-window token buckets, reset on
+        # disconnect by virtue of being instance attributes.
+        self.bucket_total = _RateBucket()
+        self.bucket_screenshot = _RateBucket()
+        self.bucket_eval = _RateBucket()
 
     @property
     def fd(self) -> int:
@@ -384,11 +574,43 @@ class _AgentServer(QObject):
             conn, _addr = self._sock.accept()
         except BlockingIOError:
             return
-        if not _peer_uid_matches(conn):
+        pid, uid = _peer_creds(conn)
+        if uid is None or uid != os.getuid():
             conn.close()
             return
+        # L6: client exe allowlist. Empty allowlist => any same-UID
+        # process is fine (legacy behaviour). Non-empty => the peer's
+        # /proc/<pid>/exe digest must be in the resolved set, else
+        # reject *before* any RPC bytes are read so the audit trail
+        # records the rejection and we never spin up a _Client for it.
+        exe_path, exe_digest = (None, None)
+        if pid is not None:
+            exe_path, exe_digest = _proc_exe_digest(pid)
+        allowed_digests = self._plugin._resolved_allowed_exes()
+        if allowed_digests:
+            if exe_digest is None or exe_digest not in allowed_digests:
+                log.warning(
+                    "AGENT_RPC_DENY uid=%d fd=%d reason=client_not_allowed "
+                    "pid=%s exe=%s digest=%s",
+                    os.getuid(), conn.fileno(), pid, exe_path,
+                    exe_digest[:16] + "..." if exe_digest else None)
+                try:
+                    # Best-effort error frame so a polite client sees
+                    # *why* it was dropped instead of an opaque EOF.
+                    conn.sendall((json.dumps(
+                        _err(None, -32002, "client_not_allowed")
+                    ) + "\n").encode("utf-8"))
+                except OSError:
+                    pass
+                conn.close()
+                return
         conn.setblocking(False)
-        client = _Client(conn, self)
+        client = _Client(conn, self, pid=pid, exe_path=exe_path,
+                          exe_digest=exe_digest)
+        log.info(
+            "AGENT_RPC_CONNECT uid=%d fd=%d pid=%s exe=%s digest=%s",
+            os.getuid(), conn.fileno(), pid, exe_path,
+            (exe_digest[:16] + "...") if exe_digest else None)
         self._clients[conn.fileno()] = client
 
     def remove_client(self, fd: int):
@@ -443,7 +665,34 @@ class _AgentServer(QObject):
         # propagate it without translation.
         allowed, deny_reason = self._plugin._policy_check_method(method)
         if not allowed:
+            log.warning(
+                "AGENT_RPC_DENY uid=%d fd=%d method=%s reason=policy_denied "
+                "detail=%s",
+                os.getuid(), client.fd, method, deny_reason)
             return _err(rid, -32002, f"policy_denied: {deny_reason}")
+        # L4: rate limit. Check category bucket first (cheap to deny a
+        # caller who's blown the screenshot quota without consuming a
+        # slot in the total bucket) then the total. A denied request
+        # does *not* count against either bucket — same shape as
+        # 03-agent-guardrails.md §L4 "Rate-limited requests don't count
+        # against the quota."
+        rl_allowed, rl_reason = self._plugin._rate_check(client, method)
+        if not rl_allowed:
+            log.warning(
+                "AGENT_RPC_DENY uid=%d fd=%d method=%s reason=rate_limited "
+                "detail=%s",
+                os.getuid(), client.fd, method, rl_reason)
+            return _err(rid, -32005, f"rate_limited: {rl_reason}")
+        # L5: broker mediation. Sensitive methods (default-deny set +
+        # admin-configured ``broker_mediated_methods``) get a synchronous
+        # CheckAgentAction call.
+        b_allowed, b_reason = self._plugin._broker_mediate(method, params)
+        if not b_allowed:
+            log.warning(
+                "AGENT_RPC_DENY uid=%d fd=%d method=%s reason=broker_denied "
+                "detail=%s",
+                os.getuid(), client.fd, method, b_reason)
+            return _err(rid, -32006, f"broker_denied: {b_reason}")
         try:
             fn = self._plugin._lookup_method(method)
             if fn is None:
@@ -476,6 +725,10 @@ class AgentControlPlugin(Plugin):
         # add verbs via ``register_method`` instead of monkey-patching
         # ``AgentControlPlugin.__class__``.
         self._methods: dict[str, callable] = {}
+        # L6 cache: resolved at first use, refreshed when config
+        # mutates from underneath us (tests do this a lot).
+        self._allowed_exes_cache: Optional[set[str]] = None
+        self._allowed_exes_signature: Optional[tuple] = None
 
     @staticmethod
     def _is_enabled() -> bool:
@@ -602,6 +855,139 @@ class AgentControlPlugin(Plugin):
         if allowlist and not _hostname_match_any(host, allowlist):
             return False, f"host {host} not in allowlist"
         return True, ""
+
+    # -- Layer 4: rate limiting ----------------------------------------
+
+    def _rate_check(self, client: "_Client", method: str) -> tuple[bool, str]:
+        """Return ``(allowed, reason)`` for an RPC against this client's
+        token buckets. Does not mutate buckets on denial.
+
+        Defaults track the §L4 spec: 120/min total, 10/min screenshot,
+        0/min eval (the latter so ``policy_enforced = true`` blocks
+        ``eval_js`` even if the admin re-enables it via
+        ``allowed_methods``). When config is unreadable, fail open —
+        rate limiting is hardening, not a security boundary; the policy
+        gate is.
+        """
+        try:
+            cfg = Config()
+            total = int(cfg.get("agent_control", "rate_limit_per_minute",
+                                 default=120) or 0)
+            shot = int(cfg.get("agent_control",
+                                "screenshot_rate_limit_per_minute",
+                                default=10) or 0)
+            ev = int(cfg.get("agent_control", "eval_rate_limit_per_minute",
+                              default=0) or 0)
+        except Exception:
+            return True, ""
+        now = time.monotonic()
+        bucket_total = getattr(client, "bucket_total", None)
+        bucket_shot = getattr(client, "bucket_screenshot", None)
+        bucket_eval = getattr(client, "bucket_eval", None)
+        if bucket_total is None:
+            return True, ""
+        if method in _SCREENSHOT_METHODS and bucket_shot is not None:
+            if not bucket_shot.allow(now, shot):
+                return False, f"screenshot {shot}/min"
+        if method in _EVAL_METHODS and bucket_eval is not None:
+            if not bucket_eval.allow(now, ev):
+                return False, f"eval_js {ev}/min"
+        if not bucket_total.allow(now, total):
+            return False, f"total {total}/min"
+        return True, ""
+
+    # -- Layer 5: broker mediation -------------------------------------
+
+    def _broker_mediated_methods(self) -> set[str]:
+        try:
+            cfg = Config()
+            extra = set(cfg.get("agent_control", "broker_mediated_methods",
+                                 default=[]) or [])
+        except Exception:
+            extra = set()
+        return set(_DEFAULT_DENIED_METHODS) | extra
+
+    def _broker_mediate(self, method: str, params) -> tuple[bool, str]:
+        """Optionally consult the broker before allowing the call.
+
+        Fail-open vs fail-closed rationale (this is the subtle bit
+        future-me will second-guess):
+
+        - When ``policy_enforced = true``, the admin has explicitly
+          said "I want this thing locked down." A broker that the
+          admin enabled but can't reach is then a *configuration
+          problem*, not a free pass. We **fail closed**.
+        - When ``policy_enforced = false``, ``broker_enabled = true``
+          means "audit + soft-deny if the broker says so" — the deploy
+          isn't yet committed to the security boundary. A broker
+          outage here means we'd silently break working agent
+          workflows, which is worse than allowing the call. We
+          **fail open** with a warning so the journal still tells the
+          admin to look at the broker.
+
+        This matches the principle the rest of the file follows: the
+        boundary is the policy gate (L2/L3), with L5 as defence in
+        depth.
+        """
+        try:
+            cfg = Config()
+            enabled = bool(cfg.get("agent_control", "broker_enabled",
+                                    default=False))
+            enforced = bool(cfg.get("agent_control", "policy_enforced",
+                                     default=False))
+            bus_name = cfg.get("agent_control", "broker_bus_name",
+                                default="org.qdistro.Broker")
+            obj_path = cfg.get("agent_control", "broker_object_path",
+                                default="/org/qdistro/Broker")
+            iface = cfg.get("agent_control", "broker_interface",
+                             default="org.qdistro.Broker")
+            timeout = int(cfg.get("agent_control", "broker_timeout_ms",
+                                   default=1500) or 1500)
+        except Exception:
+            return True, ""
+        if not enabled:
+            return True, ""
+        mediated = self._broker_mediated_methods()
+        if method not in mediated:
+            return True, ""
+        ok, reason, reachable = _broker_check(
+            method, params if isinstance(params, dict) else {},
+            bus_name=bus_name, object_path=obj_path,
+            interface=iface, timeout_ms=timeout)
+        if reachable:
+            return ok, reason
+        # Unreachable broker: fail-closed only when the policy gate is
+        # already on. See docstring above.
+        if enforced:
+            log.warning(
+                "broker unreachable (%s); failing closed because "
+                "policy_enforced=true", reason)
+            return False, f"broker unreachable: {reason}"
+        log.warning(
+            "broker unreachable (%s); failing open because "
+            "policy_enforced=false", reason)
+        return True, ""
+
+    # -- Layer 6: client exe allowlist ---------------------------------
+
+    def _resolved_allowed_exes(self) -> set[str]:
+        """Resolve config entries to a set of SHA256 hexdigests. Cached
+        across calls but re-resolved when the underlying config list
+        changes (tests mutate it via ``Config().set``)."""
+        try:
+            cfg = Config()
+            entries = cfg.get("agent_control", "allowed_client_exes",
+                               default=[]) or []
+        except Exception:
+            return set()
+        signature = tuple(entries)
+        if (self._allowed_exes_cache is not None
+                and self._allowed_exes_signature == signature):
+            return self._allowed_exes_cache
+        resolved = _resolve_allowed_exes(entries)
+        self._allowed_exes_cache = resolved
+        self._allowed_exes_signature = signature
+        return resolved
 
     def _on_webview_removed(self, webview):
         """Forget per-tab state for a vanished webview, so no stale

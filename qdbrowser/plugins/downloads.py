@@ -350,6 +350,33 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
         if self._panel:
             self._panel.add_active(request)
         request.accept()
+        # Notify bridge_adapter (if loaded and active) so it can fan
+        # the event out over D-Bus to qdistro daemons. We look it up
+        # via the plugin manager rather than importing the module so
+        # qdbrowser still works when bridge_adapter is disabled.
+        self._notify_bridge_started(request)
+
+    def _notify_bridge_started(self, request: QWebEngineDownloadRequest) -> None:
+        win = self._window
+        if win is None or not hasattr(win, "plugins"):
+            return
+        try:
+            bridge = win.plugins._instances.get("bridge_adapter")
+        except Exception:
+            return
+        if bridge is None or not getattr(bridge, "active", False):
+            return
+        try:
+            # request.id() exists on Qt6's QWebEngineDownloadRequest;
+            # fall back to python id() so unit tests with fakes don't
+            # crash here.
+            did = int(request.id()) if hasattr(request, "id") else id(request)
+            filename = os.path.basename(
+                os.path.join(request.downloadDirectory(),
+                             request.downloadFileName()))
+            bridge.emit_download_started(did, filename)
+        except Exception as exc:
+            log.warning("bridge download-started notify failed: %s", exc)
 
     def get_commands(self, window):
         return [

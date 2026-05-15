@@ -143,6 +143,44 @@ DEFAULTS = {
         "timeout": 30.0,
         "max_chars": 8000,
     },
+    "security": {
+        # Site isolation: origins to pin to dedicated renderer processes
+        # via Chromium's ``--isolate-origins`` flag. Each origin must be
+        # a scheme+host (no trailing slash). The flag is composed
+        # before QApplication construction in __main__.py.
+        "isolate_origins": [],
+        # HTTPS-only mode: rewrite http:// -> https:// for everything
+        # not in ``http_allowlist`` (host-globs). When ``https_only``
+        # is true and a request can't be safely upgraded (POST with
+        # body, ws://, etc.) the interceptor returns an interstitial.
+        "https_only": False,
+        "http_allowlist": [],
+        # Do-Not-Track / Global Privacy Control: when true, the
+        # interceptor adds ``DNT: 1`` and ``Sec-GPC: 1`` to every
+        # outbound request.
+        "do_not_track": False,
+        # User-agent policy: "default" lets pages override the UA via
+        # JS; "strict" rejects JS-driven overrides and pins to the
+        # configured / Qt-default UA.
+        "user_agent_policy": "default",
+        # Pin / override admin paths (overridable from env in tests).
+        "cert_pins_path": "/etc/qdistro/cert-pins.json",
+        "cert_pins_user_path": os.path.expanduser(
+            "~/.config/qdbrowser/cert-pins.json"),
+        "cert_overrides_path": "/etc/qdistro/cert-overrides.json",
+    },
+    "downloads": {
+        # Quarantine: every download lands in
+        # ``~/.local/share/qdbrowser/quarantine/`` with a sibling
+        # ``.qdistro-meta.json`` and an entry in ``metadata.db``.
+        "quarantine_dir": os.path.expanduser(
+            "~/.local/share/qdbrowser/quarantine"),
+        # Optional scan command. Receives the file path as argv[1];
+        # non-zero exit marks the file ``quarantined-bad``.
+        "scan_command": "",
+        # Target dir for release-from-quarantine.
+        "release_dir": os.path.expanduser("~/Downloads"),
+    },
     "agent_control": {
         # Master switch for method-allowlist enforcement. Off by default
         # so existing deployments don't suddenly start denying methods.
@@ -165,6 +203,38 @@ DEFAULTS = {
         # effect regardless.
         "navigate_allowlist": [],
         "navigate_denylist": [],
+        # ---- Layer 4: rate limiting (per-client token buckets) ----
+        # All limits are sliding-window counts over the trailing 60s.
+        # ``0`` disables a category (so ``eval_rate_limit_per_minute = 0``
+        # under ``policy_enforced = true`` is the secure default: no JS
+        # eval at all). Negative values are treated as 0. The total
+        # bucket applies to *every* RPC including screenshots/eval;
+        # the per-category buckets are additional constraints.
+        "rate_limit_per_minute": 120,
+        "screenshot_rate_limit_per_minute": 10,
+        "eval_rate_limit_per_minute": 0,
+        # ---- Layer 5: broker mediation ----
+        # When enabled, calls to ``_DEFAULT_DENIED_METHODS`` (or any
+        # method in ``broker_mediated_methods``) get a synchronous
+        # D-Bus check against ``Broker.CheckAgentAction``. See
+        # ``_broker_check`` for the fail-open vs fail-closed policy.
+        "broker_enabled": False,
+        "broker_bus_name": "org.qdistro.Broker",
+        "broker_object_path": "/org/qdistro/Broker",
+        "broker_interface": "org.qdistro.Broker",
+        "broker_timeout_ms": 1500,
+        # Methods that always require broker approval when
+        # ``broker_enabled``. The default-deny set is implicitly
+        # included.
+        "broker_mediated_methods": [],
+        # ---- Layer 6: client exe allowlist ----
+        # Each entry is either an absolute path (resolved to its current
+        # SHA256 at plugin activation) or ``sha256:<hex>``. Empty list
+        # disables the check (UID match via SO_PEERCRED is still
+        # required). Non-empty list rejects connections whose
+        # ``/proc/<pid>/exe`` digest is not in the resolved set with
+        # ``client_not_allowed``.
+        "allowed_client_exes": [],
     },
 }
 

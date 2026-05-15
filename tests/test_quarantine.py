@@ -1,0 +1,341 @@
+"""Quarantine store: SQLite metadata, sidecar, scan, polkit-gated release.
+
+Pure-Python tests — no Qt is involved. The polkit check is mocked by
+patching ``subprocess.run``.
+"""
+
+import hashlib
+import json
+import os
+import sqlite3
+import subprocess
+from unittest.mock import patch, MagicMock
+
+import pytest
+
+
+# ---------------------------------------------------------------------------
+# QuarantineStore basics
+# ---------------------------------------------------------------------------
+
+
+def _make_store(tmp_path):
+    from qdbrowser.quarantine import QuarantineStore
+    return QuarantineStore(str(tmp_path / "quar"))
+
+
+def test_store_creates_dir_and_db(tmp_path):
+    store = _make_store(tmp_path)
+    assert os.path.isdir(store.directory)
+    assert os.path.exists(store.db_path)
+    # Schema is present.
+    con = sqlite3.connect(store.db_path)
+    rows = con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    con.close()
+    assert any(r[0] == "downloads" for r in rows)
+    store.close()
+
+
+def test_record_inserts_row(tmp_path):
+    store = _make_store(tmp_path)
+    qpath = os.path.join(store.directory, "foo.bin")
+    open(qpath, "wb").close()
+    row_id = store.record(
+        quarantine_path=qpath,
+        filename="foo.bin",
+        source_url="https://example.com/foo.bin",
+        content_type="application/octet-stream",
+        profile_name="default",
+        tab_id=3,
+        size_bytes=0,
+        sha256="abc123",
+        scan_result="pending",
+    )
+    assert row_id is not None
+    row = store.get(row_id)
+    assert row["source_url"] == "https://example.com/foo.bin"
+    assert row["scan_result"] == "pending"
+    assert row["profile_name"] == "default"
+    assert row["tab_id"] == 3
+    assert row["released"] == 0
+    store.close()
+
+
+def test_write_sidecar_produces_json(tmp_path):
+    store = _make_store(tmp_path)
+    qpath = os.path.join(store.directory, "a.txt")
+    open(qpath, "wb").close()
+    row_id = store.record(quarantine_path=qpath, filename="a.txt",
+                          source_url="https://x/")
+    payload = {"source_url": "https://x/", "extra": ["a", "b"]}
+    sidecar = store.write_sidecar(row_id, qpath, payload)
+    assert sidecar.endswith(".qdistro-meta.json")
+    with open(sidecar) as f:
+        loaded = json.load(f)
+    assert loaded == payload
+    store.close()
+
+
+def test_update_after_finish_and_scan(tmp_path):
+    store = _make_store(tmp_path)
+    qpath = os.path.join(store.directory, "z.bin")
+    open(qpath, "wb").close()
+    row_id = store.record(quarantine_path=qpath, filename="z.bin",
+                          source_url="https://x/z")
+    store.update_after_finish(row_id, sha256="deadbeef", size_bytes=42)
+    store.update_scan_result(row_id, "clean")
+    row = store.get(row_id)
+    assert row["sha256"] == "deadbeef"
+    assert row["size_bytes"] == 42
+    assert row["scan_result"] == "clean"
+    store.close()
+
+
+def test_list_pending_and_all(tmp_path):
+    store = _make_store(tmp_path)
+    for n in range(3):
+        p = os.path.join(store.directory, f"f{n}.bin")
+        open(p, "wb").close()
+        store.record(quarantine_path=p, filename=f"f{n}.bin",
+                     source_url=f"https://x/{n}")
+    pending = store.list_pending()
+    assert len(pending) == 3
+    all_rows = store.list_all(limit=10)
+    assert len(all_rows) == 3
+    store.close()
+
+
+def test_plan_path_handles_collisions(tmp_path):
+    store = _make_store(tmp_path)
+    p1 = store.plan_path("dup.txt")
+    open(p1, "wb").close()
+    p2 = store.plan_path("dup.txt")
+    assert p1 != p2
+    assert p2.endswith(".1.txt") or p2.endswith(".txt")
+    open(p2, "wb").close()
+    p3 = store.plan_path("dup.txt")
+    assert p3 not in (p1, p2)
+    store.close()
+
+
+# ---------------------------------------------------------------------------
+# hash_file
+# ---------------------------------------------------------------------------
+
+
+def test_hash_file_matches_hashlib(tmp_path):
+    from qdbrowser.quarantine import hash_file
+    data = os.urandom(1024 * 5 + 17)
+    p = tmp_path / "blob.bin"
+    p.write_bytes(data)
+    expected = hashlib.sha256(data).hexdigest()
+    assert hash_file(str(p)) == expected
+    # Small chunk size still produces the right hash.
+    assert hash_file(str(p), chunk=7) == expected
+
+
+def test_hash_file_empty(tmp_path):
+    from qdbrowser.quarantine import hash_file
+    p = tmp_path / "empty"
+    p.write_bytes(b"")
+    assert hash_file(str(p)) == hashlib.sha256(b"").hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# run_scan
+# ---------------------------------------------------------------------------
+
+
+def test_run_scan_skipped_on_empty_command(tmp_path):
+    from qdbrowser.quarantine import run_scan
+    p = tmp_path / "x"
+    p.write_bytes(b"hi")
+    assert run_scan("", str(p)) == "skipped"
+
+
+def test_run_scan_clean_with_true(tmp_path):
+    from qdbrowser.quarantine import run_scan
+    p = tmp_path / "x"
+    p.write_bytes(b"hi")
+    if not os.path.exists("/bin/true"):
+        pytest.skip("/bin/true not present")
+    assert run_scan("/bin/true", str(p)) == "clean"
+
+
+def test_run_scan_bad_with_false(tmp_path):
+    from qdbrowser.quarantine import run_scan
+    p = tmp_path / "x"
+    p.write_bytes(b"hi")
+    if not os.path.exists("/bin/false"):
+        pytest.skip("/bin/false not present")
+    assert run_scan("/bin/false", str(p)) == "bad"
+
+
+def test_run_scan_error_when_command_missing(tmp_path):
+    from qdbrowser.quarantine import run_scan
+    p = tmp_path / "x"
+    p.write_bytes(b"hi")
+    assert run_scan("/nonexistent/scanner-xyzzy", str(p)) == "error"
+
+
+# ---------------------------------------------------------------------------
+# release + polkit
+# ---------------------------------------------------------------------------
+
+
+def _setup_release(tmp_path):
+    """Build a store + a quarantined file ready to release."""
+    store = _make_store(tmp_path)
+    qpath = os.path.join(store.directory, "doc.pdf")
+    with open(qpath, "wb") as f:
+        f.write(b"contents")
+    row_id = store.record(quarantine_path=qpath, filename="doc.pdf",
+                          source_url="https://x/doc.pdf",
+                          scan_result="clean")
+    return store, qpath, row_id
+
+
+def test_release_authorized_moves_file(tmp_path):
+    from qdbrowser.quarantine import release
+    store, qpath, row_id = _setup_release(tmp_path)
+    out_dir = tmp_path / "Downloads"
+    result = release(store, row_id, str(out_dir), authorized=True)
+    assert result is not None
+    assert os.path.exists(result)
+    assert not os.path.exists(qpath)
+    row = store.get(row_id)
+    assert row["released"] == 1
+    assert row["release_path"] == result
+    store.close()
+
+
+def test_release_denied_leaves_file(tmp_path):
+    from qdbrowser.quarantine import release
+    store, qpath, row_id = _setup_release(tmp_path)
+    out_dir = tmp_path / "Downloads"
+    result = release(store, row_id, str(out_dir), authorized=False)
+    assert result is None
+    assert os.path.exists(qpath)
+    row = store.get(row_id)
+    assert row["released"] == 0
+    store.close()
+
+
+def test_release_refuses_bad_scan_result(tmp_path):
+    from qdbrowser.quarantine import release
+    store = _make_store(tmp_path)
+    qpath = os.path.join(store.directory, "evil.bin")
+    open(qpath, "wb").close()
+    row_id = store.record(quarantine_path=qpath, filename="evil.bin",
+                          source_url="https://x/", scan_result="bad")
+    out_dir = tmp_path / "Downloads"
+    result = release(store, row_id, str(out_dir), authorized=True)
+    assert result is None
+    assert os.path.exists(qpath)
+    store.close()
+
+
+def test_release_unknown_id(tmp_path):
+    from qdbrowser.quarantine import release
+    store = _make_store(tmp_path)
+    assert release(store, 9999, str(tmp_path / "Downloads"),
+                   authorized=True) is None
+    store.close()
+
+
+def test_release_clobber_protection(tmp_path):
+    from qdbrowser.quarantine import release
+    store, qpath, row_id = _setup_release(tmp_path)
+    out_dir = tmp_path / "Downloads"
+    out_dir.mkdir()
+    (out_dir / "doc.pdf").write_bytes(b"existing")
+    result = release(store, row_id, str(out_dir), authorized=True)
+    assert result is not None
+    assert os.path.basename(result) != "doc.pdf"  # got a suffix
+    # Original is untouched.
+    assert (out_dir / "doc.pdf").read_bytes() == b"existing"
+    store.close()
+
+
+def test_check_release_authorized_pkcheck_zero(monkeypatch):
+    from qdbrowser import quarantine
+
+    fake = MagicMock(returncode=0, stdout=b"", stderr=b"")
+    monkeypatch.setattr(quarantine.subprocess, "run", lambda *a, **k: fake)
+    assert quarantine.check_release_authorized() is True
+
+
+def test_check_release_authorized_pkcheck_nonzero(monkeypatch):
+    from qdbrowser import quarantine
+
+    fake = MagicMock(returncode=1, stdout=b"", stderr=b"")
+    monkeypatch.setattr(quarantine.subprocess, "run", lambda *a, **k: fake)
+    assert quarantine.check_release_authorized() is False
+
+
+def test_check_release_authorized_pkcheck_missing(monkeypatch):
+    from qdbrowser import quarantine
+
+    def _boom(*a, **k):
+        raise FileNotFoundError("pkcheck")
+
+    monkeypatch.setattr(quarantine.subprocess, "run", _boom)
+    assert quarantine.check_release_authorized() is False
+
+
+def test_release_uses_pkcheck_when_authorized_arg_none(tmp_path, monkeypatch):
+    """When ``authorized`` is None, release should consult check_release_authorized."""
+    from qdbrowser import quarantine
+
+    store, qpath, row_id = _setup_release(tmp_path)
+    out_dir = tmp_path / "Downloads"
+
+    calls = []
+
+    def _fake_check():
+        calls.append(1)
+        return True
+
+    monkeypatch.setattr(quarantine, "check_release_authorized", _fake_check)
+    result = quarantine.release(store, row_id, str(out_dir), authorized=None)
+    assert result is not None
+    assert calls == [1]
+    store.close()
+
+
+# ---------------------------------------------------------------------------
+# _sanitize_name
+# ---------------------------------------------------------------------------
+
+
+def test_sanitize_name_strips_directories():
+    from qdbrowser.quarantine import _sanitize_name
+    assert _sanitize_name("../../etc/passwd") == "passwd"
+    assert _sanitize_name("/abs/path/file.txt") == "file.txt"
+    # Backslashes are stripped from the *characters*, not used as a
+    # separator (Linux os.path.basename only splits on '/').
+    out = _sanitize_name("subdir\\file.txt")
+    assert "\\" not in out
+    assert out == "subdirfile.txt"
+
+
+def test_sanitize_name_control_chars():
+    from qdbrowser.quarantine import _sanitize_name
+    # NUL byte gets dropped; non-printable chars too.
+    assert "\x00" not in _sanitize_name("a\x00b.txt")
+    assert "\x07" not in _sanitize_name("a\x07b.txt")
+
+
+def test_sanitize_name_empty_falls_back():
+    from qdbrowser.quarantine import _sanitize_name
+    assert _sanitize_name("") == "download"
+    assert _sanitize_name(None) == "download"
+    assert _sanitize_name("   ") == "download"
+
+
+def test_sanitize_name_long_input_preserved():
+    from qdbrowser.quarantine import _sanitize_name
+    long_name = "a" * 500 + ".bin"
+    # Module doesn't truncate — just sanitize. Long but printable is fine.
+    assert _sanitize_name(long_name) == long_name

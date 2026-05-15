@@ -1,4 +1,24 @@
-"""Entry point for qdbrowser."""
+"""Entry point for qdbrowser.
+
+Minimum supported QtWebEngine version: **6.5**. The site-isolation
+flags ``--site-per-process`` and ``--isolate-origins`` documented at
+the bottom of this docstring require a Chromium 110+ bundle, which Qt
+6.5 was the first stable to ship; older Qt builds silently ignore
+``--isolate-origins`` because the Chromium flag arrived later. The
+guard in ``_compose_chromium_flags`` is best-effort — it appends the
+flag and lets Chromium reject it if the bundle is too old (logged at
+WARN by Chromium itself).
+
+Chromium flags composed here, before QApplication construction:
+
+  - ``--site-per-process``: always on by default since Chromium 67.
+  - ``--isolate-origins=...``: built from
+    ``[security] isolate_origins`` in the user config. Each origin
+    pinned to its own renderer process.
+
+Site isolation is the cheapest hardening qdbrowser gets — it relies
+on the Chromium sandbox to enforce origin separation per renderer.
+"""
 
 import argparse
 import logging
@@ -15,6 +35,39 @@ log = logging.getLogger("qdbrowser")
 # Qt.AA_ShareOpenGLContexts must be set before a QCoreApplication
 # instance is created."
 import PyQt6.QtWebEngineWidgets  # noqa: F401
+
+
+def _compose_chromium_flags():
+    """Augment ``QTWEBENGINE_CHROMIUM_FLAGS`` with site-isolation
+    options before QApplication is built.
+
+    Reads ``[security] isolate_origins`` from the user config. We must
+    NOT overwrite anything the user already put on the env var (e.g.
+    ``--no-sandbox`` for a privileged-namespace VM), so we append
+    instead of replacing.
+    """
+    # Importing config here is fine — Config doesn't touch Qt.
+    try:
+        from qdbrowser.config import Config
+        from qdbrowser.security_interceptor import compose_isolate_origins_flag
+    except Exception:
+        return
+    cfg = Config()
+    origins = cfg.get("security", "isolate_origins", default=[]) or []
+    flag = compose_isolate_origins_flag(origins)
+    if not flag:
+        return
+    existing = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
+    parts = [existing] if existing else []
+    parts.append(flag)
+    # ``--site-per-process`` is Chromium's default in renderer-isolation
+    # mode but be explicit so an admin reading /proc/<pid>/cmdline can
+    # confirm what's active.
+    if "--site-per-process" not in existing:
+        parts.append("--site-per-process")
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(parts)
+    log.info("qdbrowser.security isolate_origins=%s",
+             ",".join(origins))
 
 from PyQt6.QtWidgets import QApplication
 
@@ -83,6 +136,10 @@ def main(argv=None):
     # QtWebEngine needs a sandboxing env-friendly default. Don't override
     # if user already set something.
     os.environ.setdefault("QT_QPA_PLATFORM", os.environ.get("QT_QPA_PLATFORM", ""))
+
+    # Compose --isolate-origins from config BEFORE QApplication is
+    # constructed; Chromium reads its command line once at process start.
+    _compose_chromium_flags()
 
     app = QApplication(sys.argv)
     app.setApplicationName("qdbrowser")
