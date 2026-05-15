@@ -143,6 +143,29 @@ DEFAULTS = {
         "timeout": 30.0,
         "max_chars": 8000,
     },
+    "agent_control": {
+        # Master switch for method-allowlist enforcement. Off by default
+        # so existing deployments don't suddenly start denying methods.
+        # Production should set this to ``true``; see the secure recipe
+        # in todo/browser/03-agent-guardrails.md.
+        "policy_enforced": False,
+        # Methods explicitly re-enabled by the admin. Takes precedence
+        # over the built-in default-deny set (eval_js, type_text,
+        # send_keys, click_at, dblclick_at, move_mouse) and over the
+        # `denied_methods` list below. Only consulted when
+        # ``policy_enforced = true``.
+        "allowed_methods": [],
+        # Extra methods the admin wants denied on top of the defaults.
+        # Only consulted when ``policy_enforced = true``.
+        "denied_methods": [],
+        # Hostname-glob allowlist for ``rpc_navigate``. Empty = no
+        # restriction. ``*.foo.com`` matches subdomains only (a real
+        # dot boundary), not ``evilfoo.com``. Independent of
+        # ``policy_enforced``: any non-empty allow/deny list takes
+        # effect regardless.
+        "navigate_allowlist": [],
+        "navigate_denylist": [],
+    },
 }
 
 

@@ -31,6 +31,28 @@ log = logging.getLogger("qdbrowser.agent_control")
 _MAX_LINE_BYTES = 4 * 1024 * 1024     # 4 MiB per JSON-RPC line
 _MAX_BUFFER_BYTES = 8 * 1024 * 1024   # 8 MiB pending buffer per client
 
+# Default-deny set. These RPCs can exfiltrate data or act on behalf of
+# the user without consent (arbitrary JS, synthetic typing/clicking).
+# Admin must explicitly re-enable each via [agent_control] allowed_methods.
+# See todo/browser/03-agent-guardrails.md §Layer 2.
+_DEFAULT_DENIED_METHODS = frozenset({
+    "eval_js",
+    "type_text",
+    "send_keys",
+    "click_at",
+    "dblclick_at",
+    "move_mouse",
+})
+
+# Param keys whose values are redacted in audit logs — they're either
+# attacker-controllable or sensitive on their face.
+_REDACT_PARAM_KEYS = frozenset({
+    "script",   # eval_js
+    "text",     # type_text
+    "keys",     # send_keys
+    "png_b64",  # never in request, but defence in depth
+})
+
 from PyQt6.QtCore import (
     QBuffer, QByteArray, QEvent, QIODevice, QObject, QPoint, QPointF,
     QSize, QSocketNotifier, Qt, QTimer, QUrl,
@@ -88,6 +110,48 @@ def _peer_uid_matches(conn: socket.socket) -> bool:
         return uid == os.getuid()
     except OSError:
         return False
+
+
+def _redact_params(params):
+    """Strip sensitive values from RPC params for audit logging.
+
+    Replaces values under _REDACT_PARAM_KEYS with ``<redacted:Nb>`` so the
+    audit log records the operation shape without leaking JS source, typed
+    text, or key sequences.
+    """
+    if not isinstance(params, dict):
+        return params
+    out = {}
+    for k, v in params.items():
+        if k in _REDACT_PARAM_KEYS and v is not None:
+            try:
+                size = len(v) if not isinstance(v, (int, float, bool)) else 0
+            except TypeError:
+                size = 0
+            out[k] = f"<redacted:{size}b>"
+        else:
+            out[k] = v
+    return out
+
+
+def _hostname_match(host: str, pattern: str) -> bool:
+    """Match a hostname against a glob.
+
+    Bare names are exact match: ``foo.com`` only matches ``foo.com``.
+    Wildcard prefix ``*.foo.com`` matches ``a.foo.com`` and any deeper
+    subdomain, but **not** ``foo.com`` itself and **not** ``evilfoo.com``
+    — the leading ``*.`` requires a real dot boundary.
+    """
+    if pattern == host:
+        return True
+    if pattern.startswith("*."):
+        suffix = pattern[1:]   # e.g. ".foo.com"
+        return host.endswith(suffix) and len(host) > len(suffix)
+    return False
+
+
+def _hostname_match_any(host: str, patterns) -> bool:
+    return any(_hostname_match(host, p) for p in patterns)
 
 
 # -- key name -> Qt.Key / text translation. Coarser than qterminator's
@@ -362,11 +426,24 @@ class _AgentServer(QObject):
         method = req.get("method")
         params = req.get("params") or {}
         rid = req.get("id")
+        # Audit log every RPC before policy/dispatch so denied attempts
+        # are also captured. Tag matches the logger name for
+        # ``journalctl --user -t qdbrowser.agent_control``.
+        log.info(
+            "AGENT_RPC uid=%d fd=%d method=%s params=%s",
+            os.getuid(), client.fd, method,
+            _redact_params(params) if isinstance(params, dict) else params)
         if not isinstance(params, dict):
             return _err(rid, -32602, "params must be an object")
         # Don't let an agent pass a positional-conflicting kwarg.
         if "client" in params:
             return _err(rid, -32602, "reserved param name: client")
+        # Method-allowlist gate. ``policy_denied`` returns at the standard
+        # JSON-RPC application-error code so the MCP/HTTP proxy can
+        # propagate it without translation.
+        allowed, deny_reason = self._plugin._policy_check_method(method)
+        if not allowed:
+            return _err(rid, -32002, f"policy_denied: {deny_reason}")
         try:
             fn = self._plugin._lookup_method(method)
             if fn is None:
@@ -455,6 +532,76 @@ class AgentControlPlugin(Plugin):
         if method in self._methods:
             return self._methods[method]
         return getattr(self, f"rpc_{method}", None)
+
+    # -- policy checks --------------------------------------------------
+
+    def _policy_check_method(self, method) -> tuple[bool, str]:
+        """Return ``(allowed, reason)`` for an RPC method.
+
+        Policy enforcement is **opt-in** for backwards compatibility:
+        set ``[agent_control] policy_enforced = true`` to turn it on.
+        When enforced, ``_DEFAULT_DENIED_METHODS`` are denied; admin can
+        subtract from that set via ``allowed_methods`` and add to it via
+        ``denied_methods``. ``allowed`` wins over ``denied`` when a
+        method appears in both, so an admin can explicitly re-enable
+        e.g. ``eval_js`` for a development host.
+
+        Production deployments should set ``policy_enforced = true``;
+        the secure recipe is in ``todo/browser/03-agent-guardrails.md``.
+        """
+        try:
+            cfg = Config()
+            enforced = bool(cfg.get("agent_control", "policy_enforced",
+                                    default=False))
+        except Exception:
+            return True, ""
+        if not enforced:
+            return True, ""
+        try:
+            allowed = set(cfg.get("agent_control", "allowed_methods",
+                                  default=[]) or [])
+            denied = set(cfg.get("agent_control", "denied_methods",
+                                 default=[]) or [])
+        except Exception:
+            allowed, denied = set(), set()
+        effective_deny = (_DEFAULT_DENIED_METHODS | denied) - allowed
+        if method in effective_deny:
+            return False, method
+        return True, ""
+
+    def _policy_check_url(self, url) -> tuple[bool, str]:
+        """Return ``(allowed, reason)`` for a navigation URL.
+
+        Empty allowlist+denylist = no restriction. ``about:`` URLs always
+        allowed (safe internal pages). Denylist takes precedence over
+        allowlist. Glob semantics per ``_hostname_match``.
+        """
+        if not isinstance(url, str):
+            return False, "url not a string"
+        if url.startswith("about:"):
+            return True, ""
+        try:
+            cfg = Config()
+            allowlist = cfg.get("agent_control", "navigate_allowlist",
+                                default=[]) or []
+            denylist = cfg.get("agent_control", "navigate_denylist",
+                               default=[]) or []
+        except Exception:
+            return True, ""
+        if not allowlist and not denylist:
+            return True, ""
+        from urllib.parse import urlparse
+        try:
+            host = (urlparse(url).hostname or "").lower()
+        except Exception:
+            return False, "url unparseable"
+        if not host:
+            return False, "url has no host"
+        if denylist and _hostname_match_any(host, denylist):
+            return False, f"host {host} in denylist"
+        if allowlist and not _hostname_match_any(host, allowlist):
+            return False, f"host {host} not in allowlist"
+        return True, ""
 
     def _on_webview_removed(self, webview):
         """Forget per-tab state for a vanished webview, so no stale
@@ -637,6 +784,9 @@ class AgentControlPlugin(Plugin):
     def rpc_navigate(self, client, tab_id: int, url: str):
         if tab_id not in client.attached_tabs:
             raise _RpcError(-32001, "not attached")
+        allowed, reason = self._policy_check_url(url)
+        if not allowed:
+            raise _RpcError(-32002, f"policy_denied: {reason}")
         wv = self._get_webview(tab_id)
         wv.navigate(url)
         return {"ok": True}
