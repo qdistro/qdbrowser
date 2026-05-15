@@ -1,0 +1,148 @@
+"""History: persistent visit log + side panel."""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget,
+    QListWidgetItem, QLineEdit,
+)
+
+from qdbrowser.config import CONFIG_DIR
+from qdbrowser.plugin import SidePanelProvider, PageObserver, CommandProvider
+
+
+HISTORY_PATH = os.path.join(CONFIG_DIR, "history.jsonl")
+MAX_HISTORY = 10000
+
+
+class _Store:
+    def __init__(self):
+        self._records: list = []
+        self._load()
+
+    def _load(self):
+        if not os.path.exists(HISTORY_PATH):
+            return
+        try:
+            with open(HISTORY_PATH) as f:
+                for line in f:
+                    try:
+                        self._records.append(json.loads(line))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        # Cap memory.
+        if len(self._records) > MAX_HISTORY:
+            self._records = self._records[-MAX_HISTORY:]
+
+    def add(self, url: str, title: str = ""):
+        if not url or url.startswith("about:") or url.startswith("data:"):
+            return
+        rec = {"url": url, "title": title, "ts": time.time()}
+        self._records.append(rec)
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        try:
+            with open(HISTORY_PATH, "a") as f:
+                f.write(json.dumps(rec) + "\n")
+        except Exception:
+            pass
+        if len(self._records) > MAX_HISTORY:
+            self._records = self._records[-MAX_HISTORY:]
+
+    def all(self):
+        return list(reversed(self._records))
+
+
+class HistoryPanel(QWidget):
+    def __init__(self, window, store: _Store):
+        super().__init__()
+        self._window = window
+        self._store = store
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        self._filter = QLineEdit()
+        self._filter.setPlaceholderText("Filter history…")
+        self._filter.textChanged.connect(self._refresh)
+        layout.addWidget(self._filter)
+
+        self._list = QListWidget()
+        self._list.itemActivated.connect(self._open_current)
+        layout.addWidget(self._list, 1)
+
+        row = QHBoxLayout()
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self._refresh)
+        row.addWidget(refresh_btn)
+        layout.addLayout(row)
+
+        self._refresh()
+
+    def _refresh(self):
+        self._list.clear()
+        q = self._filter.text().lower().strip()
+        for r in self._store.all()[:500]:
+            label = f"{r.get('title') or '(no title)'}  —  {r.get('url','')}"
+            if q and q not in label.lower():
+                continue
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, r)
+            self._list.addItem(item)
+
+    def _open_current(self, item):
+        r = item.data(Qt.ItemDataRole.UserRole)
+        if r and self._window._active_webview:
+            self._window._active_webview.navigate(r.get("url", ""))
+
+
+class HistoryPlugin(SidePanelProvider, PageObserver, CommandProvider):
+    name = "history"
+    capabilities = ["side_panel", "page_observer", "command_provider"]
+    panel_id = "history"
+    panel_label = "History"
+    panel_icon = "H"
+
+    def __init__(self):
+        super().__init__()
+        self._store = _Store()
+        self._panel = None
+
+    def activate(self, window):
+        self._window = window
+
+    def build_panel(self, window):
+        self._panel = HistoryPanel(window, self._store)
+        return self._panel
+
+    def on_title_changed(self, webview, title):
+        # Update the most recent matching record's title.
+        if not self._store._records:
+            return
+        last = self._store._records[-1]
+        if last.get("url") == webview.url() and not last.get("title"):
+            last["title"] = title
+
+    def on_navigation(self, webview, url):
+        self._store.add(url, webview.title())
+        if self._panel:
+            self._panel._refresh()
+
+    def get_commands(self, window):
+        out = [("Show history panel",
+                lambda: window._side_panel.show_panel(self.panel_id))]
+        for r in self._store.all()[:30]:
+            title = r.get("title") or r.get("url", "")
+            out.append((
+                f"History: {title}",
+                lambda u=r.get("url", ""): (
+                    window._active_webview.navigate(u)
+                    if window._active_webview else None
+                ),
+            ))
+        return out
