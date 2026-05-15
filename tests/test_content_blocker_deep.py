@@ -23,7 +23,7 @@ def test_disabled_lets_everything_through(fresh_config):
     plug = ContentBlockerPlugin()
     plug.activate(object())
     plug._enabled = False
-    plug._blocked_hosts = {"bad.com"}
+    plug._blocked_hosts_view = frozenset({"bad.com"})
     info = _fake_info("bad.com")
     plug.intercept(info)
     info.block.assert_not_called()
@@ -33,7 +33,7 @@ def test_blocks_exact_match(fresh_config):
     from qdbrowser.plugins.content_blocker import ContentBlockerPlugin
     plug = ContentBlockerPlugin()
     plug.activate(object())
-    plug._blocked_hosts = {"ads.bad.com"}
+    plug._blocked_hosts_view = frozenset({"ads.bad.com"})
     info = _fake_info("ads.bad.com")
     plug.intercept(info)
     info.block.assert_called_once_with(True)
@@ -44,7 +44,7 @@ def test_blocks_suffix_match(fresh_config):
     from qdbrowser.plugins.content_blocker import ContentBlockerPlugin
     plug = ContentBlockerPlugin()
     plug.activate(object())
-    plug._blocked_hosts = {"bad.com"}
+    plug._blocked_hosts_view = frozenset({"bad.com"})
     info = _fake_info("sub.foo.bad.com")
     plug.intercept(info)
     info.block.assert_called_once_with(True)
@@ -54,8 +54,8 @@ def test_allowlist_wins(fresh_config):
     from qdbrowser.plugins.content_blocker import ContentBlockerPlugin
     plug = ContentBlockerPlugin()
     plug.activate(object())
-    plug._blocked_hosts = {"bad.com"}
-    plug._allow_hosts = {"good.bad.com"}
+    plug._blocked_hosts_view = frozenset({"bad.com"})
+    plug._allow_hosts_view = frozenset({"good.bad.com"})
     info = _fake_info("good.bad.com")
     plug.intercept(info)
     info.block.assert_not_called()
@@ -66,7 +66,7 @@ def test_no_host_skipped(fresh_config):
     from qdbrowser.plugins.content_blocker import ContentBlockerPlugin
     plug = ContentBlockerPlugin()
     plug.activate(object())
-    plug._blocked_hosts = {"bad.com"}
+    plug._blocked_hosts_view = frozenset({"bad.com"})
     info = _fake_info("")
     plug.intercept(info)
     info.block.assert_not_called()
@@ -76,7 +76,7 @@ def test_unrelated_host_passes(fresh_config):
     from qdbrowser.plugins.content_blocker import ContentBlockerPlugin
     plug = ContentBlockerPlugin()
     plug.activate(object())
-    plug._blocked_hosts = {"bad.com"}
+    plug._blocked_hosts_view = frozenset({"bad.com"})
     info = _fake_info("good.com")
     plug.intercept(info)
     info.block.assert_not_called()

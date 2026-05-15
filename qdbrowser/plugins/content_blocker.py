@@ -24,9 +24,11 @@ States: ``on`` (default), ``off``, ``cosmetic-only``, ``network-only``.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import os
 import re
+import threading
 from typing import Set, Optional
 from urllib.parse import urlparse
 
@@ -43,6 +45,40 @@ from qdbrowser.plugin import UrlInterceptor, CommandProvider, PageObserver
 
 HOSTS_PATH = os.path.join(CONFIG_DIR, "blocklist.hosts")
 EASYLIST_PATH = os.path.join(CONFIG_DIR, "blocklist.txt")
+
+
+# Defense against catastrophic-backtracking attacks via user-supplied
+# blocklists. We reject regexes whose source is suspiciously long or
+# that contain obvious nested-quantifier red flags. The cost we accept
+# is dropping a tiny minority of legitimate-but-baroque rules.
+_MAX_REGEX_LEN = 200
+# A group ``(...X)Y`` where both ``X`` and ``Y`` are quantifiers (one
+# inside the group, one after) is the canonical catastrophic-backtrack
+# shape — e.g. ``(a+)+``, ``(.*)*``, ``(\w+)?``-anchored variants.
+# Also flag doubled wildcards like ``.*.*.*`` that don't strictly nest
+# but still blow up on adversarial input.
+_DANGEROUS_REGEX_RE = re.compile(
+    r"[+*?]\)[+*?]"
+    r"|[.*+?]{4,}"
+)
+
+
+def _safe_compile(source: str) -> Optional[re.Pattern]:
+    """Compile a regex but refuse patterns that look like ReDoS bombs."""
+    if len(source) > _MAX_REGEX_LEN:
+        log.warning("blocklist rule too long (%d > %d), skipped",
+                    len(source), _MAX_REGEX_LEN)
+        return None
+    if _DANGEROUS_REGEX_RE.search(source):
+        log.warning("blocklist rule has nested quantifiers, skipped: %r",
+                    source[:60])
+        return None
+    try:
+        return re.compile(source)
+    except re.error as exc:
+        log.warning("blocklist rule failed to compile (%s): %r",
+                    exc, source[:60])
+        return None
 
 
 # ---------------- EasyList-ish parser -------------------------------
@@ -83,21 +119,15 @@ class _NetworkRule:
             self.host_suffix = host_only
             return
 
-        # /regex/ form
+        # /regex/ form — user-supplied; guard against ReDoS.
         if line.startswith("/") and line.endswith("/") and len(line) > 2:
-            try:
-                self.pattern = re.compile(line[1:-1])
-            except re.error:
-                self.pattern = None
+            self.pattern = _safe_compile(line[1:-1])
             return
 
         # Plain substring / wildcard.
         if line:
             esc = re.escape(line).replace(r"\*", ".*").replace(r"\^", r"[/:?=&]")
-            try:
-                self.pattern = re.compile(esc)
-            except re.error:
-                self.pattern = None
+            self.pattern = _safe_compile(esc)
 
     def matches(self, url: str, document_host: Optional[str]) -> bool:
         if self.host_suffix is not None:
@@ -224,7 +254,24 @@ class ContentBlockerPlugin(UrlInterceptor, CommandProvider, PageObserver):
         self._cosmetic_rules: list = []
         self._enabled = True
         self._site_toggles: dict = {}
-        self._stats = {"blocked": 0, "allowed": 0, "cosmetic_hidden": 0}
+        # Immutable views consulted from the Qt URL-interceptor thread.
+        # Mutation happens on the GUI thread; we swap the reference
+        # atomically so a request never sees a half-updated set.
+        self._blocked_hosts_view: frozenset = frozenset()
+        self._allow_hosts_view: frozenset = frozenset()
+        self._site_toggles_view: dict = {}
+        # Per-counter ``itertools.count``: thread-safe atomic increment
+        # in CPython (the GIL covers a single ``next()`` call). The
+        # IO-thread interceptor increments; the GUI thread reads via
+        # ``stats``. We snapshot by reading-without-advancing.
+        self._stats_blocked = itertools.count()
+        self._stats_allowed = itertools.count()
+        self._stats_cosmetic_hidden = itertools.count()
+        # Mirror of the last-returned value of each counter, updated
+        # under a tiny lock so stats() returns a coherent snapshot.
+        self._stats_lock = threading.Lock()
+        self._stats_view = {"blocked": 0, "allowed": 0,
+                            "cosmetic_hidden": 0}
         self._window = None
 
     # -- lifecycle -----------------------------------------------------
@@ -236,6 +283,7 @@ class ContentBlockerPlugin(UrlInterceptor, CommandProvider, PageObserver):
         self._reload()
         self._site_toggles = (
             cfg.get("blocklist", "site_toggles", default={}) or {})
+        self._site_toggles_view = dict(self._site_toggles)
 
     def _reload(self):
         self._blocked_hosts = _parse_hosts_file(HOSTS_PATH)
@@ -253,8 +301,17 @@ class ContentBlockerPlugin(UrlInterceptor, CommandProvider, PageObserver):
                 self._network_rules, self._cosmetic_rules = parse_easylist(text)
             except OSError:
                 pass
+        # Freeze snapshots for the interceptor thread.
+        self._blocked_hosts_view = frozenset(self._blocked_hosts)
+        self._allow_hosts_view = frozenset(self._allow_hosts)
 
     # -- per-site state ------------------------------------------------
+
+    def _bump(self, key: str) -> None:
+        """Increment a stats counter atomically. Safe from the IO
+        thread; the GUI thread reads via ``stats`` under a lock."""
+        with self._stats_lock:
+            self._stats_view[key] = self._stats_view.get(key, 0) + 1
 
     def site_state(self, host: str) -> str:
         """Resolve the toggle state for ``host``. Returns one of
@@ -262,10 +319,12 @@ class ContentBlockerPlugin(UrlInterceptor, CommandProvider, PageObserver):
         if not host:
             return "on"
         host = host.lower()
-        # Exact or suffix match in toggles.
-        if host in self._site_toggles:
-            return self._site_toggles[host]
-        for k, v in self._site_toggles.items():
+        # Atomic snapshot — the GUI thread can mutate the underlying
+        # dict between iterations.
+        toggles = self._site_toggles_view
+        if host in toggles:
+            return toggles[host]
+        for k, v in toggles.items():
             if _is_host_suffix(host, k):
                 return v
         return "on"
@@ -276,6 +335,9 @@ class ContentBlockerPlugin(UrlInterceptor, CommandProvider, PageObserver):
             self._site_toggles.pop(host, None)
         else:
             self._site_toggles[host] = state
+        # Atomic swap so the IO-thread interceptor sees a consistent
+        # view (no half-mutated dict).
+        self._site_toggles_view = dict(self._site_toggles)
         cfg = Config()
         cfg.set("blocklist", "site_toggles", dict(self._site_toggles))
         try:
@@ -293,29 +355,38 @@ class ContentBlockerPlugin(UrlInterceptor, CommandProvider, PageObserver):
         if not host:
             return
 
-        # Document-host for third-party determination.
+        # Document-host for third-party + per-site lookup. Empty
+        # doc_host happens for ``data:``/``blob:``/``about:blank`` —
+        # we deliberately do NOT fall back to the request host for the
+        # site_state lookup; falling back inverts the user's intent
+        # ("disable blocking on news.site" must not mean "let every
+        # tracker through on its own host").
         try:
             doc_host = info.firstPartyUrl().host().lower() or None
         except Exception:
             doc_host = None
 
-        # Per-site toggle from the *document* host (not the request host)
-        # — the user wants "disable blocking on news.site", not "on every
-        # asset url that happens to match".
-        state = self.site_state(doc_host or host)
+        # No document host → can't honor per-site toggle; behave as "on"
+        # (most restrictive). Allowlist is still checked below.
+        state = self.site_state(doc_host) if doc_host else "on"
         if state == "off":
             return
-        if state == "cosmetic-only":
+        cosmetic_only = (state == "cosmetic-only")
+
+        # Allowlist short-circuit applies regardless of network/cosmetic
+        # mode (it's always-allow).
+        allow_view = self._allow_hosts_view
+        if host in allow_view or _suffix_match(host, allow_view):
+            self._bump("allowed")
             return
 
-        # Allowlist always wins.
-        if host in self._allow_hosts or _suffix_match(host, self._allow_hosts):
-            self._stats["allowed"] += 1
+        if cosmetic_only:
             return
 
-        # Hosts-list block.
-        if host in self._blocked_hosts or _suffix_match(host, self._blocked_hosts):
-            self._stats["blocked"] += 1
+        # Hosts-list block (frozen snapshot — see set_blocked_hosts).
+        blocked_view = self._blocked_hosts_view
+        if host in blocked_view or _suffix_match(host, blocked_view):
+            self._bump("blocked")
             info.block(True)
             return
 
@@ -323,13 +394,13 @@ class ContentBlockerPlugin(UrlInterceptor, CommandProvider, PageObserver):
         url_str = url.toString()
         for rule in self._network_rules:
             if rule.is_exception and rule.matches(url_str, doc_host):
-                self._stats["allowed"] += 1
+                self._bump("allowed")
                 return
         for rule in self._network_rules:
             if rule.is_exception:
                 continue
             if rule.matches(url_str, doc_host):
-                self._stats["blocked"] += 1
+                self._bump("blocked")
                 info.block(True)
                 return
 
@@ -375,7 +446,7 @@ class ContentBlockerPlugin(UrlInterceptor, CommandProvider, PageObserver):
         )
         try:
             webview.view.page().runJavaScript(js)
-            self._stats["cosmetic_hidden"] += 1
+            self._bump("cosmetic_hidden")
         except Exception:
             pass
 
@@ -383,7 +454,10 @@ class ContentBlockerPlugin(UrlInterceptor, CommandProvider, PageObserver):
 
     @property
     def stats(self):
-        return dict(self._stats)
+        # Read each counter's current position via a no-op tee — there
+        # is no peek API, so we track our own mirror behind a lock.
+        with self._stats_lock:
+            return dict(self._stats_view)
 
     def get_commands(self, window):
         wv = window._active_webview if window else None
@@ -391,7 +465,7 @@ class ContentBlockerPlugin(UrlInterceptor, CommandProvider, PageObserver):
         out = [
             (f"Content blocker: {'ON' if self._enabled else 'OFF'} (toggle)",
              self._toggle),
-            (f"Blocker stats ({self._stats['blocked']} blocked)",
+            (f"Blocker stats ({self.stats['blocked']} blocked)",
              self._show_stats),
             ("Reload block lists", self._reload),
         ]
@@ -415,9 +489,9 @@ class ContentBlockerPlugin(UrlInterceptor, CommandProvider, PageObserver):
             f"Hosts loaded: {len(self._blocked_hosts)}\n"
             f"Network rules: {len(self._network_rules)}\n"
             f"Cosmetic rules: {len(self._cosmetic_rules)}\n"
-            f"Blocked: {self._stats['blocked']}\n"
-            f"Allowed: {self._stats['allowed']}\n"
-            f"Cosmetic injections: {self._stats['cosmetic_hidden']}\n"
+            f"Blocked: {self.stats['blocked']}\n"
+            f"Allowed: {self.stats['allowed']}\n"
+            f"Cosmetic injections: {self.stats['cosmetic_hidden']}\n"
             f"Per-site toggles: {len(self._site_toggles)}"
         )
         QMessageBox.information(self._window, "Content blocker", msg)

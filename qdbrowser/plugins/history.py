@@ -32,12 +32,21 @@ class _Store:
             with open(HISTORY_PATH) as f:
                 for line in f:
                     try:
-                        self._records.append(json.loads(line))
+                        rec = json.loads(line)
                     except Exception:
                         continue
+                    if rec.get("_fixup") == "title":
+                        # Apply to the latest visit of this URL.
+                        url = rec.get("url")
+                        new_title = rec.get("title", "")
+                        for r in reversed(self._records):
+                            if r.get("url") == url:
+                                r["title"] = new_title
+                                break
+                        continue
+                    self._records.append(rec)
         except Exception:
             pass
-        # Cap memory.
         if len(self._records) > MAX_HISTORY:
             self._records = self._records[-MAX_HISTORY:]
 
@@ -57,6 +66,26 @@ class _Store:
 
     def all(self):
         return list(reversed(self._records))
+
+    def update_title(self, url: str, title: str) -> None:
+        """Append a title-only line for ``url`` to the JSONL log.
+
+        Best-effort: a full disk or permission error is logged at
+        warning level (matches ``add()`` semantics) — never propagates
+        into the Qt signal-dispatch path that called us.
+        """
+        if not url:
+            return
+        rec = {"url": url, "title": title, "ts": time.time(),
+               "_fixup": "title"}
+        try:
+            os.makedirs(CONFIG_DIR, exist_ok=True)
+            with open(HISTORY_PATH, "a") as f:
+                f.write(json.dumps(rec) + "\n")
+        except OSError as exc:
+            import logging
+            logging.getLogger("qdbrowser.history").warning(
+                "could not persist history fixup: %s", exc)
 
 
 class HistoryPanel(QWidget):
@@ -121,12 +150,20 @@ class HistoryPlugin(SidePanelProvider, PageObserver, CommandProvider):
         return self._panel
 
     def on_title_changed(self, webview, title):
-        # Update the most recent matching record's title.
+        # Update the most recent matching record's title and persist it
+        # (the JSONL log is append-only, so a fixup line wins on read
+        # via "last wins" in ``_Store._load``).
         if not self._store._records:
             return
         last = self._store._records[-1]
         if last.get("url") == webview.url() and not last.get("title"):
             last["title"] = title
+            try:
+                self._store.update_title(last["url"], title)
+            except OSError as exc:
+                import logging
+                logging.getLogger("qdbrowser.history").warning(
+                    "could not persist title: %s", exc)
 
     def on_navigation(self, webview, url):
         self._store.add(url, webview.title())

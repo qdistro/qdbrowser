@@ -20,6 +20,13 @@ def _save_dir() -> str:
     return d
 
 
+# Cap on full-page screenshot composite size — a hostile page can set
+# ``scrollWidth``/``scrollHeight`` to anything, and a 4 TB allocation
+# attempt is just an OOM. 16384 x 32768 fits any reasonable article.
+_MAX_FULL_PAGE_WIDTH = 16384
+_MAX_FULL_PAGE_HEIGHT = 32768
+
+
 class ScreenshotPlugin(CommandProvider):
     name = "screenshot"
     description = "Capture viewport, full page, or a CSS-selector element."
@@ -77,9 +84,9 @@ class ScreenshotPlugin(CommandProvider):
             QApplication.instance().processEvents()
         info = result["data"] or {"w": 1280, "h": 800, "vw": 1280, "vh": 800,
                                   "dpr": 1}
-        total_w = int(info["w"])
-        total_h = int(info["h"])
-        vh = int(info["vh"])
+        total_w = min(int(info["w"]), _MAX_FULL_PAGE_WIDTH)
+        total_h = min(int(info["h"]), _MAX_FULL_PAGE_HEIGHT)
+        vh = max(1, int(info["vh"]))
 
         # Composite by scrolling and grabbing the view repeatedly.
         composite = QImage(total_w, total_h, QImage.Format.Format_ARGB32)

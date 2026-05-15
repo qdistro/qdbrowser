@@ -315,23 +315,17 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
 
     def activate(self, window):
         self._window = window
-        # Wire any profiles already created.
-        for prof in wv_mod._PROFILES.values():
-            self._wire(prof)
-        # Also default profile (Qt creates one even before our get_profile).
+        # Subscribe to "profile created" so every present and future
+        # QWebEngineProfile gets its ``downloadRequested`` signal
+        # wired without rebinding ``wv_mod.get_profile``. The webview
+        # module replays its current cache to us synchronously.
+        wv_mod.on_profile_created(self._wire)
+        # Qt creates a defaultProfile() of its own before any
+        # ``get_profile`` call; include it explicitly.
         self._wire(QWebEngineProfile.defaultProfile())
-        # New profiles are added lazily — patch get_profile so future
-        # ones get wired too.
-        orig_get = wv_mod.get_profile
 
-        def wrapped_get(name="default"):
-            prof = orig_get(name)
-            self._wire(prof)
-            return prof
-
-        if not getattr(wv_mod.get_profile, "_qdb_wrapped", False):
-            wrapped_get._qdb_wrapped = True  # type: ignore[attr-defined]
-            wv_mod.get_profile = wrapped_get  # type: ignore[assignment]
+    def deactivate(self):
+        wv_mod.off_profile_created(self._wire)
 
     def _wire(self, profile: QWebEngineProfile):
         if id(profile) in self._wired_profiles:

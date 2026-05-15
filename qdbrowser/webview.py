@@ -33,6 +33,43 @@ from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 _PROFILES: dict = {}
 
+# Subscribers (plain Python callables) for "a new profile was created"
+# events. Used by downloads.py to wire ``downloadRequested`` on every
+# profile we mint, without monkey-patching ``get_profile``.
+_PROFILE_LISTENERS: list = []
+
+
+def on_profile_created(callback) -> None:
+    """Register ``callback(profile)`` to be invoked for every profile
+    qdbrowser creates from now on. Also invoked retroactively for
+    every profile already in the cache, so the subscriber doesn't
+    miss the default profile that was minted before activation.
+    """
+    if callback not in _PROFILE_LISTENERS:
+        _PROFILE_LISTENERS.append(callback)
+    for prof in list(_PROFILES.values()):
+        try:
+            callback(prof)
+        except Exception:
+            pass
+
+
+def off_profile_created(callback) -> None:
+    """Unregister a ``callback`` previously passed to
+    ``on_profile_created``."""
+    try:
+        _PROFILE_LISTENERS.remove(callback)
+    except ValueError:
+        pass
+
+
+def _notify_profile_created(profile) -> None:
+    for cb in list(_PROFILE_LISTENERS):
+        try:
+            cb(profile)
+        except Exception:
+            pass
+
 
 # Monotonic webview id source. ``id()`` is unsafe to expose to agents
 # because Python may reuse the memory address after a tab is closed,
@@ -67,6 +104,7 @@ def get_profile(name: str = "default") -> QWebEngineProfile:
         prof.setPersistentCookiesPolicy(
             QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies)
     _PROFILES[name] = prof
+    _notify_profile_created(prof)
     return prof
 
 
@@ -116,7 +154,6 @@ class WebView(QWidget):
     load_finished = pyqtSignal(object, bool)           # (self, ok)
     focus_gained = pyqtSignal(object)                  # (self,)
     close_requested = pyqtSignal(object)               # (self,)
-    page_load_seq_incremented = pyqtSignal(object, int)  # (self, seq)
 
     def __init__(self,
                  url: Optional[str] = None,
@@ -192,7 +229,6 @@ class WebView(QWidget):
 
     def _on_load_finished(self, ok: bool):
         self._page_load_seq += 1
-        self.page_load_seq_incremented.emit(self, self._page_load_seq)
         self.load_finished.emit(self, ok)
 
     # -- accessors ------------------------------------------------------

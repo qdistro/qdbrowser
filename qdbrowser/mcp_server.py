@@ -154,7 +154,9 @@ def build_server(client: AgentControlClient, mcp=None):
 
     @mcp.tool()
     def reload(tab_id: int) -> dict:
-        """Reload a tab."""
+        """Reload a tab. Returns immediately; pair with `wait_for_load`
+        (or `wait_for_selector` for a specific element) if you need to
+        block until the reload completes before acting."""
         return client.call("reload", tab_id=tab_id)
 
     @mcp.tool()
@@ -179,14 +181,27 @@ def build_server(client: AgentControlClient, mcp=None):
 
     @mcp.tool()
     def wait_for_load(tab_id: int, timeout: float = 10.0) -> dict:
-        """Block until the next loadFinished or timeout."""
+        """Block until the next full page load fires `loadFinished`.
+
+        Use AFTER `navigate`, `reload`, `go_back`, or `go_forward` — these
+        trigger a real top-level load. Do NOT use after `click_at`
+        on a single-page app (Gmail, Slack, modern React/Vue sites):
+        SPA clicks update the URL via History API but never fire
+        `loadFinished`, so this verb will time out. For SPA clicks,
+        use `wait_for_selector` to wait for the post-click DOM."""
         return client.call("wait_for_load", tab_id=tab_id, timeout=timeout)
 
     @mcp.tool()
     def click_at(tab_id: int, x: float, y: float,
                  button: str = "left",
                  modifiers: Optional[list] = None) -> dict:
-        """Click at viewport CSS pixels (x, y)."""
+        """Synthesise a click at viewport CSS pixels (x, y). The click
+        is JS-dispatched (`MouseEvent` on `elementFromPoint(x,y)`), so
+        framework click handlers (React, Vue, Svelte) fire correctly.
+        For locating coordinates: call `query_selector` first to get
+        the rect, then click at its centre. After clicking, use
+        `wait_for_selector` to wait for SPA state changes; `wait_for_load`
+        is the wrong verb for clicks (see its description)."""
         return client.call("click_at", tab_id=tab_id, x=x, y=y,
                            button=button, modifiers=modifiers or [])
 
@@ -244,7 +259,11 @@ def build_server(client: AgentControlClient, mcp=None):
     @mcp.tool()
     def wait_for_selector(tab_id: int, selector: str,
                           timeout: float = 5.0) -> dict:
-        """Poll until ``selector`` exists in DOM or timeout."""
+        """Poll the DOM at 100ms intervals until `selector` matches or
+        timeout. PREFER THIS over `wait_for_load` after `click_at` on
+        any modern web app (SPA clicks don't trigger `loadFinished`).
+        Also useful after `navigate` when you want to wait for a
+        specific element rather than the whole page."""
         return client.call("wait_for_selector", tab_id=tab_id,
                            selector=selector, timeout=timeout)
 

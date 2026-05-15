@@ -172,12 +172,22 @@ class PluginManager:
         if instance:
             instance.activate(app_controller)
             self._enabled.add(name)
+            self._app_controller = app_controller
             return True
         return False
 
     def disable(self, name):
         instance = self._instances.get(name)
         if instance:
+            # Disconnect any window-level signals we wired for this
+            # plugin (page observers etc.) before deactivate() so the
+            # plugin can't see events firing during teardown.
+            ac = getattr(self, "_app_controller", None)
+            if ac is not None and hasattr(ac, "disconnect_plugin"):
+                try:
+                    ac.disconnect_plugin(instance)
+                except Exception:
+                    pass
             instance.deactivate()
             self._enabled.discard(name)
 

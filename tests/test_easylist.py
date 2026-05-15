@@ -138,7 +138,7 @@ def test_intercept_respects_site_off(fresh_config):
     from unittest.mock import MagicMock
     plug = ContentBlockerPlugin()
     plug.activate(object())
-    plug._blocked_hosts = {"ads.bad.com"}
+    plug._blocked_hosts_view = frozenset({"ads.bad.com"})
     plug.set_site_state("news.test", "off")
     info = MagicMock()
     info.requestUrl.return_value.host.return_value = "ads.bad.com"
@@ -151,7 +151,7 @@ def test_intercept_blocks_when_site_on(fresh_config):
     from unittest.mock import MagicMock
     plug = ContentBlockerPlugin()
     plug.activate(object())
-    plug._blocked_hosts = {"ads.bad.com"}
+    plug._blocked_hosts_view = frozenset({"ads.bad.com"})
     info = MagicMock()
     info.requestUrl.return_value.host.return_value = "ads.bad.com"
     info.firstPartyUrl.return_value.host.return_value = "news.test"

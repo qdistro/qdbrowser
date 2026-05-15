@@ -20,7 +20,9 @@ def test_new_tab_appears(window):
     plug = window.plugins._instances["tab_list"]
     panel = plug._panel
     window.new_tab(url="about:blank")
-    # The window's webview_added signal triggers refresh.
+    # The window's webview_added signal schedules a debounced refresh.
+    # Force the debounce to fire synchronously for the test.
+    panel.refresh()
     leaves = _all_leaves(panel)
     assert len(leaves) == 2
 

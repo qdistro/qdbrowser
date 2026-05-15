@@ -67,7 +67,7 @@ DEFAULTS = {
         "switch_to_tab_7": "Alt+7",
         "switch_to_tab_8": "Alt+8",
         "switch_to_tab_9": "Alt+9",
-        "pin_tab": "Ctrl+Shift+P",
+        "pin_tab": "Ctrl+Alt+P",
         "mute_tab": "Ctrl+M",
         # Navigation
         "address_bar": "Ctrl+L",

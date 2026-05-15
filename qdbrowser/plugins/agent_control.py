@@ -129,6 +129,11 @@ _MODIFIERS = {
 def _parse_key(name: str):
     """Return (Qt.Key, text, modifiers) for a symbolic key name like
     'enter', 'ctrl+l', 'shift+tab', 'a'.
+
+    Only printable ASCII single-char keys are accepted; for non-ASCII
+    or composed characters the caller should use ``rpc_type_text``
+    (which uses ``insertText`` on the focused element) rather than
+    synthesising key events with a bogus ``Qt.Key`` enum value.
     """
     parts = name.lower().split("+")
     mods = Qt.KeyboardModifier.NoModifier
@@ -141,14 +146,17 @@ def _parse_key(name: str):
         return qkey, text, mods
     if len(key_name) == 1:
         ch = key_name
-        # Single-letter key: derive Qt key code.
         if "a" <= ch <= "z":
+            shifted = bool(mods & Qt.KeyboardModifier.ShiftModifier)
             return (Qt.Key(ord(ch.upper())),
-                    ch if not (mods & Qt.KeyboardModifier.ShiftModifier) else ch.upper(),
+                    ch.upper() if shifted else ch,
                     mods)
         if "0" <= ch <= "9":
             return Qt.Key(ord(ch)), ch, mods
-        return Qt.Key(ord(ch)), ch, mods
+        if 0x20 <= ord(ch) <= 0x7E:
+            return Qt.Key(ord(ch)), ch, mods
+        raise ValueError(
+            f"unsupported key {name!r} — use type_text for non-ASCII")
     raise ValueError(f"unknown key name: {name!r}")
 
 

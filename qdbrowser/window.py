@@ -35,7 +35,14 @@ from qdbrowser.splitter import SplitContainer
 from qdbrowser.webview import WebView
 
 
-SESSION_PATH = os.path.join(CONFIG_DIR, "session.json")
+# Autosave path. Lives under the same ``sessions/`` directory as named
+# saves so a tester can find every session-shaped file in one place.
+# The ``_`` prefix marks it as managed and keeps it out of the named
+# sessions listing.
+SESSION_PATH = os.path.join(CONFIG_DIR, "sessions", "_autosave.json")
+# Legacy path; if it exists, prefer it once for restore and then
+# migrate to the new location on next save.
+_LEGACY_SESSION_PATH = os.path.join(CONFIG_DIR, "session.json")
 
 
 class _UrlBar(QLineEdit):
@@ -69,6 +76,7 @@ class MainWindow(QMainWindow):
         self._config = Config()
         self._active_webview: Optional[WebView] = None
         self._closed_tabs: list = []  # stack of {tree, name}
+        self._last_find_text: str = ""
 
         self._build_tabs()
         self._build_toolbar()
@@ -85,6 +93,10 @@ class MainWindow(QMainWindow):
         # ``register_agent_methods_later`` from their own ``activate``.
         # We drain it after every plugin has had its first activate().
         self._pending_agent_contribs: list = []
+        # Per-plugin signal connections — disconnected on disable so a
+        # deactivated plugin stops receiving page events and stops
+        # keeping itself alive through closures.
+        self._plugin_connections: dict = {}  # plugin -> [(signal, conn), ...]
         self.plugins = PluginManager()
         self.plugins.discover()
         self._enable_default_plugins()
@@ -202,6 +214,20 @@ class MainWindow(QMainWindow):
         """
         self._pending_agent_contribs.append(plugin)
 
+    def disconnect_plugin(self, plugin) -> None:
+        """Disconnect every signal we wired for ``plugin``. Called from
+        ``PluginManager.disable`` so a deactivated plugin stops
+        receiving page events and isn't pinned by lambda closures.
+        """
+        conns = self._plugin_connections.pop(plugin, None)
+        if not conns:
+            return
+        for signal, conn in conns:
+            try:
+                signal.disconnect(conn)
+            except (RuntimeError, TypeError):
+                pass
+
     def _wire_pending_agent_contribs(self) -> None:
         ac = getattr(self, "agent_control", None)
         if ac is None:
@@ -275,6 +301,22 @@ class MainWindow(QMainWindow):
             ("toggle_side_panel", self._toggle_side_panel),
             ("save_session", self.save_session),
             ("quit", self.close),
+            # Tab affordances.
+            ("pin_tab", self._toggle_pin_active),
+            ("mute_tab", self._toggle_mute_active),
+            ("find_next", lambda: self._find_repeat(False)),
+            ("find_prev", lambda: self._find_repeat(True)),
+            # Side-panel direct switches.
+            ("panel_bookmarks",
+             lambda: self._side_panel.show_panel("bookmarks")),
+            ("panel_history",
+             lambda: self._side_panel.show_panel("history")),
+            ("panel_downloads",
+             lambda: self._side_panel.show_panel("downloads")),
+            ("panel_notes",
+             lambda: self._side_panel.show_panel("notes")),
+            # Screenshot of the current tab.
+            ("take_screenshot", self._take_screenshot_visible),
         ]
         for action_name, slot in defs:
             seq = kb.get(action_name)
@@ -320,18 +362,26 @@ class MainWindow(QMainWindow):
         wv.load_progress.connect(self._on_wv_load_progress)
         wv.load_finished.connect(self._on_wv_load_finished)
         wv.focus_gained.connect(self._set_active_webview)
-        # Plugin observers
+        # Plugin observers — track each connection by plugin so we can
+        # disconnect them when the plugin is disabled. Otherwise the
+        # lambdas keep deactivated plugins alive and they keep
+        # receiving events.
         for obs in self.plugins.get_page_observers():
             try:
-                wv.url_changed.connect(
+                s1 = wv.url_changed.connect(
                     lambda _wv, u, _obs=obs: _obs.on_navigation(_wv, u))
-                wv.load_finished.connect(
+                s2 = wv.load_finished.connect(
                     lambda _wv, ok, _obs=obs: _obs.on_load_finished(_wv, ok))
-                wv.title_changed.connect(
+                s3 = wv.title_changed.connect(
                     lambda _wv, t, _obs=obs: _obs.on_title_changed(_wv, t))
             except Exception as exc:
                 log.warning("page observer wiring for %s failed: %s",
                             type(obs).__name__, exc)
+                continue
+            conns = self._plugin_connections.setdefault(obs, [])
+            conns.append((wv.url_changed, s1))
+            conns.append((wv.load_finished, s2))
+            conns.append((wv.title_changed, s3))
         # URL interceptors
         for interc in self.plugins.get_url_interceptors():
             wv.add_interceptor(interc)
@@ -544,10 +594,11 @@ class MainWindow(QMainWindow):
                 self._config.get("general", "homepage", default="about:blank"))
 
     def _find_in_page(self):
-        # Lightweight inline find prompt via the URL bar. A full find bar
-        # could be a future plugin contribution.
+        # Lightweight inline find prompt via QInputDialog. A full find
+        # bar (forward/back/highlight all) could be a future plugin.
         text, ok = _quick_input(self, "Find in page:")
         if ok and self._active_webview:
+            self._last_find_text = text
             self._active_webview.view.findText(text)
 
     def _toggle_devtools(self):
@@ -597,6 +648,30 @@ class MainWindow(QMainWindow):
     def _toggle_side_panel(self):
         self._side_panel.setVisible(not self._side_panel.isVisible())
 
+    def _toggle_pin_active(self):
+        wv = self._active_webview
+        if wv is not None:
+            wv.set_pinned(not wv.pinned)
+
+    def _toggle_mute_active(self):
+        wv = self._active_webview
+        if wv is not None:
+            wv.set_muted(not wv.muted)
+
+    def _find_repeat(self, backward: bool):
+        wv = self._active_webview
+        if wv is None or not self._last_find_text:
+            return
+        from PyQt6.QtWebEngineCore import QWebEnginePage
+        flags = QWebEnginePage.FindFlag.FindBackward if backward else \
+            QWebEnginePage.FindFlag(0)
+        wv.view.findText(self._last_find_text, flags)
+
+    def _take_screenshot_visible(self):
+        plug = self.plugins._instances.get("screenshot")
+        if plug is not None and hasattr(plug, "capture_viewport"):
+            plug.capture_viewport(self._active_webview)
+
     def _open_command_palette(self):
         plug = self.plugins._instances.get("command_palette")
         if plug is not None and hasattr(plug, "open"):
@@ -613,21 +688,23 @@ class MainWindow(QMainWindow):
 
     def save_session(self):
         from qdbrowser.layout import serialize_layout
-        os.makedirs(CONFIG_DIR, exist_ok=True)
+        os.makedirs(os.path.dirname(SESSION_PATH), exist_ok=True)
         data = serialize_layout(self._tabs)
         with open(SESSION_PATH, "w") as f:
             json.dump(data, f, indent=2)
 
     def restore_session(self):
-        if not os.path.exists(SESSION_PATH):
+        path = (SESSION_PATH if os.path.exists(SESSION_PATH)
+                else (_LEGACY_SESSION_PATH
+                      if os.path.exists(_LEGACY_SESSION_PATH) else None))
+        if path is None:
             return False
         try:
-            with open(SESSION_PATH) as f:
+            with open(path) as f:
                 data = json.load(f)
         except Exception:
             return False
         from qdbrowser.layout import restore_layout
-        # Empty the tabs first.
         while self._tabs.count() > 0:
             self._tabs.removeTab(0)
         restore_layout(self, data)

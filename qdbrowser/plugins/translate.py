@@ -81,7 +81,7 @@ OVERLAY_JS_TEMPLATE = r"""
   wrap.id = id;
   wrap.style.cssText = ''
     + 'position:fixed;inset:0;z-index:2147483647;'
-    + 'background:rgba(20,20,20,0.97);color:#e8e8e8;'
+    + 'background:__BG__;color:__FG__;'
     + 'display:flex;font:14px/1.55 system-ui,sans-serif;'
     + 'overflow:hidden;';
   var left = document.createElement('div');
@@ -91,14 +91,14 @@ OVERLAY_JS_TEMPLATE = r"""
       + 'flex:1 1 50%;padding:24px;overflow:auto;'
       + 'white-space:pre-wrap;word-wrap:break-word;';
   }
-  left.style.borderRight = '1px solid #444';
+  left.style.borderRight = '1px solid __BORDER__';
   left.textContent = original;
   right.textContent = translated;
   var close = document.createElement('button');
   close.textContent = '×';
   close.style.cssText = ''
     + 'position:absolute;top:12px;right:12px;'
-    + 'background:#333;color:#fff;border:1px solid #555;'
+    + 'background:__BG_MID__;color:__FG__;border:1px solid __BORDER__;'
     + 'border-radius:4px;width:32px;height:32px;cursor:pointer;'
     + 'font-size:18px;';
   close.onclick = function(){ wrap.remove(); };
@@ -111,13 +111,21 @@ OVERLAY_JS_TEMPLATE = r"""
 """
 
 
-def _build_overlay_js(original: str, translated: str) -> str:
-    """Build the overlay JS by replacing a single token. We deliberately
-    pass both args via one substitution so an ``__ORIG__`` or
-    ``__TRANS__`` literal inside the page text can't corrupt the second
-    replacement."""
+def _build_overlay_js(original: str, translated: str,
+                       mode: str = "auto") -> str:
+    """Build the overlay JS. Args go in via one substitution so an
+    ``__ARGS__`` literal inside the page text can't corrupt anything,
+    and the theme palette is interpolated so the overlay matches the
+    user's selected theme."""
+    from qdbrowser.theme import palette_dict
+    p = palette_dict(mode)
     args = f"{_js_str(original)}, {_js_str(translated)}"
-    return OVERLAY_JS_TEMPLATE.replace("__ARGS__", args)
+    return (OVERLAY_JS_TEMPLATE
+            .replace("__ARGS__", args)
+            .replace("__BG__", p["bg"])
+            .replace("__BG_MID__", p["bg_mid"])
+            .replace("__FG__", p["fg"])
+            .replace("__BORDER__", p["border"]))
 
 
 def _js_str(s: str) -> str:

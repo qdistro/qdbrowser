@@ -21,4 +21,7 @@ def test_toggle_invokes_runjs(window):
     plug.toggle(wv)
     wv.view.page().runJavaScript.assert_called_once()
     arg = wv.view.page().runJavaScript.call_args[0][0]
-    assert "Reader" in arg or "__qdbReader" in arg
+    # Sandboxed-iframe overlay markers.
+    assert "__qdb_reader_overlay" in arg
+    assert "iframe" in arg
+    assert "sandbox" in arg

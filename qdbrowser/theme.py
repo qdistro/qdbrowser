@@ -63,6 +63,41 @@ def apply_theme(app: QApplication, mode: str = "system") -> str:
     return resolved
 
 
+def palette_dict(mode: str = "auto") -> dict:
+    """Return a palette dict for use by in-page injected CSS (translate
+    overlay, dark mode, content_blocker cosmetic style, etc.). The
+    keys are stable across theme changes; values are CSS colors.
+
+    ``mode``:
+      - ``"auto"`` — follow ``detect_system_theme()``
+      - ``"dark"`` — force dark palette
+      - ``"light"`` — force light palette
+    """
+    if mode == "auto":
+        mode = detect_system_theme()
+    if mode == "light":
+        return {
+            "bg": LT_BG_BASE,
+            "bg_mid": LT_BG,
+            "bg_dim": LT_BG_MID,
+            "fg": LT_FG,
+            "fg_dim": LT_FG_DIM,
+            "accent": LT_ACCENT,
+            "border": LT_BORDER,
+            "selection": LT_SELECTION,
+        }
+    return {
+        "bg": BG_DARK,
+        "bg_mid": BG_MID,
+        "bg_dim": BG_LIGHT,
+        "fg": FG,
+        "fg_dim": FG_DIM,
+        "accent": ACCENT_LIGHT,
+        "border": BORDER,
+        "selection": SELECTION,
+    }
+
+
 def _apply_dark(app):
     pal = QPalette()
     pal.setColor(QPalette.ColorRole.Window, QColor(BG_MID))

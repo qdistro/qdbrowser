@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem,
@@ -46,13 +46,34 @@ class TabListPanel(QWidget):
         self._tree.itemDoubleClicked.connect(self._on_double_clicked)
         layout.addWidget(self._tree, 1)
 
-        # Wire window signals.
-        window.webview_added.connect(lambda _wv: self.refresh())
-        window.webview_removed.connect(lambda _wv: self.refresh())
-        window.active_webview_changed.connect(lambda _wv: self.refresh())
-        window.navigation_event.connect(lambda _wv, _url: self.refresh())
+        # Debounce refreshes so a session-restore opening 200 tabs
+        # doesn't trigger 200 full QTreeWidget rebuilds — coalesce
+        # into a single repaint after a short idle.
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.setInterval(50)
+        self._refresh_timer.timeout.connect(self.refresh)
+
+        # Wire window signals → schedule.
+        window.webview_added.connect(lambda _wv: self._schedule_refresh())
+        window.webview_removed.connect(lambda _wv: self._schedule_refresh())
+        window.active_webview_changed.connect(
+            lambda _wv: self._schedule_refresh())
+        # url_changed fires per character of typed URL; we only care
+        # about the final-result kind. ``title_changed`` is cheaper
+        # and arrives once per page.
+        window.webview_added.connect(self._wire_title_signal)
 
         self.refresh()
+
+    def _wire_title_signal(self, wv):
+        try:
+            wv.title_changed.connect(lambda _w, _t: self._schedule_refresh())
+        except Exception:
+            pass
+
+    def _schedule_refresh(self):
+        self._refresh_timer.start()
 
     def refresh(self):
         self._tree.clear()
