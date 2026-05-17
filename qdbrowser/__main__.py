@@ -180,6 +180,30 @@ def main(argv=None):
     else:
         window.show()
 
+    # qdistro App1 receiver registration. Best-effort; failures (no
+    # session bus, dbus-python missing) degrade to "browser still works,
+    # not visible to qdshell PodApps." See qdistro_integration.maybe_install
+    # for the contract. We stash the receiver on the app object so it
+    # survives across the event loop (letting it GC drops the bus claim).
+    try:
+        from qdbrowser import qdistro_integration as _qdistro
+        app._qdistro_app1_receiver = _qdistro.maybe_install(window)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("qdistro App1 registration failed: %s", exc)
+
+    # Stamp the silo badge onto the window title so a user with
+    # multiple qdbrowser windows in different silos has a visible
+    # indication of which one they're looking at. See
+    # plan2/research/qdbrowser-clipboard-silo-tag.md for the
+    # bigger picture (wp_security_context_v1 attestation is the
+    # follow-up; this is the title-shim that ships today).
+    try:
+        from qdbrowser.clipboard_silo import stamp_title
+        base_title = window.windowTitle() or "qdbrowser"
+        stamp_title(window, base_title)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("qdbrowser silo title stamp failed: %s", exc)
+
     sys.exit(app.exec())
 
 
