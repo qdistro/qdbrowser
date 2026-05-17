@@ -246,3 +246,149 @@ class TestPerformHandshake:
         bridge = _FakeBridge.with_answers({
             "qdistro.handshake": {"ok": True, "session_secret_hex": ""}})
         assert pa.perform_handshake(bridge) is None
+
+
+# ---------------------------------------------------------------------------
+# Fix-pass: bridge-stale-secret recovery + concurrency + name selection
+# ---------------------------------------------------------------------------
+
+class TestSelectBridgeNames:
+    """The selection routine pins all-digits suffixes — a same-uid
+    attacker that claims org.qdistro.BrowserBridge.evil is filtered
+    out (P04 H1 security review)."""
+
+    def test_only_numeric_suffixes_accepted(self):
+        names = ["org.qdistro.BrowserBridge.evil",
+                 "org.qdistro.BrowserBridge.42",
+                 "org.qdistro.BrowserBridge.99",
+                 "org.foo.Bar",
+                 ":1.123"]
+        out = pa.select_bridge_names(names)
+        assert [t[1] for t in out] == [
+            "org.qdistro.BrowserBridge.42",
+            "org.qdistro.BrowserBridge.99",
+        ]
+
+    def test_lowest_first(self):
+        names = ["org.qdistro.BrowserBridge.99",
+                 "org.qdistro.BrowserBridge.7"]
+        out = pa.select_bridge_names(names)
+        assert out[0][0] == 7
+
+    def test_empty_input(self):
+        assert pa.select_bridge_names([]) == []
+
+
+class TestHandshakeRefreshOnBadHmac:
+    """Bridge restart rotates the per-session secret. The orchestrator
+    must drop the cached secret, re-handshake exactly once, retry the
+    fill exactly once (P04 H2 correctness)."""
+
+    def test_retry_succeeds_after_bridge_restart(self):
+        # Sequence: pwd.fill #1 → bad_hmac (the bridge rotated its
+        # secret). The orchestrator catches it, re-handshakes (which
+        # returns a new secret), retries pwd.fill which now succeeds.
+        state = {"call_count": 0}
+
+        def fill_reply(args):
+            state["call_count"] += 1
+            if state["call_count"] == 1:
+                return {"ok": False, "error": "intent_token_bad_hmac"}
+            return {"ok": True,
+                    "credentials": [
+                        {"username": "alice", "password": "s3cret"}]}
+
+        bridge = _FakeBridge.with_answers({
+            "pwd.fill": fill_reply,
+            "qdistro.handshake": {"ok": True,
+                                  "session_secret_hex":
+                                  ("11" * 32)},
+        })
+        prompt = _FakePrompt.with_decision(allow=True)
+        o = pa.AutofillOrchestrator(bridge=bridge, prompt=prompt)
+        o.set_session_secret(SECRET_HEX)
+        r = o.fill("https://example.com/")
+        assert r.ok is True
+        assert r.username == "alice"
+        assert state["call_count"] == 2
+
+    def test_refresh_failure_surfaces_clean_error(self):
+        bridge = _FakeBridge.with_answers({
+            "pwd.fill": {"ok": False, "error": "intent_token_bad_hmac"},
+            "qdistro.handshake": {"ok": False, "error": "bridge_down"},
+        })
+        prompt = _FakePrompt.with_decision(allow=True)
+        o = pa.AutofillOrchestrator(bridge=bridge, prompt=prompt)
+        o.set_session_secret(SECRET_HEX)
+        r = o.fill("https://example.com/")
+        assert r.ok is False
+        assert r.error == "handshake_refresh_failed"
+
+    def test_only_one_retry(self):
+        """Even after a successful handshake refresh, if the second
+        attempt also returns bad_hmac, the orchestrator does NOT loop
+        — it surfaces the error."""
+        bridge = _FakeBridge.with_answers({
+            "pwd.fill": {"ok": False, "error": "intent_token_bad_hmac"},
+            "qdistro.handshake": {"ok": True,
+                                  "session_secret_hex": ("22" * 32)},
+        })
+        prompt = _FakePrompt.with_decision(allow=True)
+        o = pa.AutofillOrchestrator(bridge=bridge, prompt=prompt)
+        o.set_session_secret(SECRET_HEX)
+        r = o.fill("https://example.com/")
+        assert r.ok is False
+        assert r.error == "intent_token_bad_hmac"
+
+
+class TestUsernameSelectionValidation:
+    """If the compositor returns a username that isn't on the
+    candidate list, refuse rather than silently picking
+    credentials[0] (S4 correctness review)."""
+
+    def test_bad_selection_refused(self):
+        bridge = _FakeBridge.with_answers({"pwd.fill": {
+            "ok": True,
+            "credentials": [{"username": "alice", "password": "s"}],
+        }})
+        prompt = _FakePrompt.with_decision(allow=True, username="mallory")
+        o = pa.AutofillOrchestrator(bridge=bridge, prompt=prompt)
+        o.set_session_secret(SECRET_HEX)
+        r = o.fill("https://example.com/")
+        assert r.ok is False
+        assert r.error == "bad_username_selection"
+
+
+class TestSiloDefaultFromEnv:
+    """The orchestrator's default silo is `clipboard_silo.current_silo()`,
+    NOT a hard-coded "user" string (M2 correctness)."""
+
+    def test_silo_defaults_from_env(self, monkeypatch):
+        monkeypatch.setenv("QDISTRO_SILO", "work")
+        bridge = _FakeBridge.with_answers({})
+        prompt = _FakePrompt.with_decision(allow=True)
+        o = pa.AutofillOrchestrator(bridge=bridge, prompt=prompt)
+        assert o.silo == "work"
+
+    def test_explicit_silo_wins_over_env(self, monkeypatch):
+        monkeypatch.setenv("QDISTRO_SILO", "work")
+        bridge = _FakeBridge.with_answers({})
+        prompt = _FakePrompt.with_decision(allow=True)
+        o = pa.AutofillOrchestrator(bridge=bridge, prompt=prompt,
+                                     silo="personal")
+        assert o.silo == "personal"
+
+
+class TestSanitizeForPrompt:
+    """Strip Unicode bidi-override chars before the URL is rendered
+    in the prompt body (S8 security)."""
+
+    def test_no_bidi_chars(self):
+        assert pa._sanitize_for_prompt("https://example.com/") == \
+            "https://example.com/"
+
+    def test_strips_rtl_override(self):
+        # U+202E RIGHT-TO-LEFT OVERRIDE
+        url = "https://example.com/‮path"
+        out = pa._sanitize_for_prompt(url)
+        assert "‮" not in out

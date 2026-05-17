@@ -38,10 +38,22 @@ log = logging.getLogger("qdbrowser.bridge_adapter")
 
 # qdistro daemon D-Bus well-known names we probe for. Presence of any
 # one of them is enough to flip the adapter active.
+#
+# Note: the pwd daemon's canonical well-known name is
+# ``com.qdistro.Pwd1`` on the SYSTEM bus
+# (see qdistro/pwd/qdistro_pwd_daemon.py). The legacy
+# ``org.qdistro.Pwd1`` entry is preserved for backwards-compatibility
+# with development installs that still use the old name; the canonical
+# entry below is what production matches.
 _DAEMON_NAMES = (
     "org.qdistro.Browser1",
     "org.qdistro.Downloads1",
     "org.qdistro.Pwd1",
+    "com.qdistro.Pwd1",
+)
+_SYSTEM_DAEMON_NAMES = (
+    "com.qdistro.Pwd1",
+    "com.qdistro.AdminBroker1",
 )
 
 
@@ -437,26 +449,33 @@ def _daemons_available() -> bool:
         from jeepney.io.blocking import open_dbus_connection
     except ImportError:
         return False
-    try:
-        conn = open_dbus_connection(bus="SESSION")
-    except Exception:
-        return False
-    try:
-        bus = DBusAddress(
-            "/org/freedesktop/DBus",
-            bus_name="org.freedesktop.DBus",
-            interface="org.freedesktop.DBus",
-        )
-        reply = conn.send_and_get_reply(
-            new_method_call(bus, "ListNames"), timeout=2.0)
-        names = set(reply.body[0]) if reply.body else set()
-    except Exception:
-        return False
-    finally:
+    names: set[str] = set()
+    for bus_kind, probe_names in (
+            ("SESSION", _DAEMON_NAMES),
+            ("SYSTEM", _SYSTEM_DAEMON_NAMES)):
         try:
-            conn.close()
+            conn = open_dbus_connection(bus=bus_kind)
+        except Exception:
+            continue
+        try:
+            bus = DBusAddress(
+                "/org/freedesktop/DBus",
+                bus_name="org.freedesktop.DBus",
+                interface="org.freedesktop.DBus",
+            )
+            reply = conn.send_and_get_reply(
+                new_method_call(bus, "ListNames"), timeout=2.0)
+            bus_names = set(reply.body[0]) if reply.body else set()
+            # Only keep names this bus is responsible for so a cross-
+            # bus impostor can't pose as a probed daemon.
+            names.update(bus_names.intersection(probe_names))
         except Exception:
             pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
     return any(n in names for n in _DAEMON_NAMES)
 
 

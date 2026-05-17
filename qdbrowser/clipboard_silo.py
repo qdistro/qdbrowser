@@ -34,6 +34,24 @@ don't need a QApplication.
 from __future__ import annotations
 
 import os
+import re
+
+
+_VALID_SILO_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,31}$")
+
+
+def _sanitize_silo(s: str) -> str:
+    """Return ``s`` if it matches the silo grammar, else ``""``.
+
+    Silo names come from ``$QDISTRO_SILO`` (admin-controlled in
+    production), but the title-bar badge ends up in QML
+    title-formatters; an out-of-grammar silo with markup characters
+    could mislead the user. L3 review — constrain to a tight
+    grammar before the badge is rendered.
+    """
+    if not s:
+        return ""
+    return s if _VALID_SILO_RE.match(s) else ""
 
 
 def current_silo() -> str:
@@ -42,13 +60,15 @@ def current_silo() -> str:
     Reads ``$QDISTRO_SILO`` first, then falls back to the unix
     username. Mirrors :func:`qdistro_app._resolve_silo`'s preference
     order so qdbrowser's silo tag agrees with the App1 receiver's.
+    Sanitises against ``^[A-Za-z][A-Za-z0-9_.-]{0,31}$`` so a
+    malicious env-var can't paint markup into the window title.
     """
     env = os.environ.get("QDISTRO_SILO", "").strip()
     if env:
-        return env
+        return _sanitize_silo(env)
     try:
         import getpass
-        return getpass.getuser()
+        return _sanitize_silo(getpass.getuser())
     except Exception:  # noqa: BLE001
         return ""
 

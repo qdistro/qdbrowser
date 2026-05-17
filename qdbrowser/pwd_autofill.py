@@ -45,6 +45,7 @@ import json
 import logging
 import os
 import secrets
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -54,7 +55,14 @@ log = logging.getLogger("qdbrowser.pwd_autofill")
 
 
 # ---------------------------------------------------------------------------
-# Constants
+# Constants — CANONICAL bus names. Three review angles flagged the
+# bus-name drift between qdbrowser, browser_bridge, and the pwd daemon;
+# the values below are the single source of truth (any consumer that
+# needs one must import from here).
+#
+#   bridge:     ``org.qdistro.BrowserBridge.<ppid>`` (SESSION)
+#   pwd:        ``com.qdistro.Pwd1`` (SYSTEM)         — daemon canonical
+#   compositor: ``org.qdistro.Compositor1`` (SESSION) — popup
 # ---------------------------------------------------------------------------
 
 BRIDGE_BUS_PREFIX = "org.qdistro.BrowserBridge."
@@ -65,11 +73,42 @@ PWD_BUS = "com.qdistro.Pwd1"
 PWD_OBJ_PATH = "/com/qdistro/Pwd1"
 PWD_IFACE = "com.qdistro.Pwd1"
 
-COMPOSITOR_BUS = "org.qdistro.Compositor"
-COMPOSITOR_OBJ_PATH = "/org/qdistro/Compositor"
+# Compositor popup interface. ``Compositor1`` is the qdshell-side
+# autofill prompt; the well-known name lives on SESSION. P04 lands the
+# orchestrator-side caller; the real popup endpoint is tracked in
+# plan2/research/browser-compositor-autofill-popup.md.
+COMPOSITOR_BUS = "org.qdistro.Compositor1"
+COMPOSITOR_OBJ_PATH = "/org/qdistro/Compositor1"
 COMPOSITOR_IFACE = "org.qdistro.Compositor1"
 
 INTENT_TOKEN_TTL_S = 5.0
+
+
+def select_bridge_names(names: list[str]) -> list[tuple[int, str]]:
+    """Filter session-bus names to legit bridge instances + sort by ppid.
+
+    Mirrors :func:`qdistro_browser_bridge_client._select_bridges_by_ppid`
+    — the suffix after :data:`BRIDGE_BUS_PREFIX` must be all-digits, so
+    a same-uid attacker that claims ``org.qdistro.BrowserBridge.evil``
+    is filtered out (P04 H1 security review). Defined here so both
+    :class:`JeepneyBridgeClient` and any future consumer call ONE
+    selection routine — drift between the two filters previously
+    allowed a spoofed claim to win on the autofill path.
+    """
+    out: list[tuple[int, str]] = []
+    for n in names:
+        if not isinstance(n, str):
+            continue
+        if not n.startswith(BRIDGE_BUS_PREFIX):
+            continue
+        if n.startswith(":"):
+            continue
+        suffix = n[len(BRIDGE_BUS_PREFIX):]
+        if not suffix.isdigit():
+            continue
+        out.append((int(suffix), n))
+    out.sort(key=lambda t: t[0])
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +225,12 @@ class JeepneyAutofillPromptClient(AutofillPromptClient):
     fail-closed by design.
     """
 
-    def __init__(self, timeout_s: float = 60.0):
+    def __init__(self, timeout_s: float = 15.0):
+        # 15s is the longest a user reasonably waits at an admin
+        # prompt; longer windows compound with the bridge-side
+        # intent-token TTL (5s) and let a stale fill chain sit
+        # parked. The previous 60s default was unbounded enough that
+        # M3 review flagged it as a thread-pool starvation risk.
         self._timeout_s = float(timeout_s)
 
     def prompt(self, payload: AutofillPrompt) -> AutofillDecision:
@@ -278,12 +322,16 @@ class JeepneyBridgeClient(BridgeClient):
     def _resolve_ppid(self) -> int:
         if self._ppid is not None:
             return int(self._ppid)
-        env = os.environ.get("QDISTRO_BROWSER_BRIDGE_PPID", "").strip()
-        if env.isdigit():
-            return int(env)
-        # The bridge claims org.qdistro.BrowserBridge.<browser_ppid>;
-        # if we're co-resident with the bridge then our parent is
-        # qdbrowser itself, so we have to enumerate the bus.
+        # ``QDISTRO_BROWSER_BRIDGE_PPID`` is a debug knob that only
+        # honors itself when explicitly opted into via ``QDISTRO_DEBUG``;
+        # otherwise a parent that controls qdbrowser's environment
+        # could redirect autofill traffic to an attacker-chosen ppid
+        # (L2 review).
+        if os.environ.get("QDISTRO_DEBUG", "").strip() == "1":
+            env = os.environ.get(
+                "QDISTRO_BROWSER_BRIDGE_PPID", "").strip()
+            if env.isdigit():
+                return int(env)
         return 0
 
     def call(self, op: str, args: dict) -> dict:
@@ -301,6 +349,11 @@ class JeepneyBridgeClient(BridgeClient):
         try:
             # Resolve the bridge bus name. Prefer an explicit ppid,
             # else scan bus names for the BrowserBridge prefix.
+            # The selection routine pins all-digits suffix, sorts by
+            # ppid, picks the lowest — same gate as
+            # qdistro_browser_bridge_client._select_bridges_by_ppid
+            # so a same-uid impostor with a non-numeric suffix is
+            # filtered out (P04 H1 security review).
             target = ""
             ppid = self._resolve_ppid()
             if ppid:
@@ -310,10 +363,9 @@ class JeepneyBridgeClient(BridgeClient):
                     reply = conn.send_and_get_reply(
                         message_bus.ListNames(), timeout=2.0)
                     names = list(reply.body[0]) if reply.body else []
-                    for n in names:
-                        if n.startswith(BRIDGE_BUS_PREFIX):
-                            target = n
-                            break
+                    bridges = select_bridge_names(names)
+                    if bridges:
+                        target = bridges[0][1]
                 except Exception as exc:
                     return {"ok": False, "error": "bridge_not_found",
                             "detail": str(exc)[:200]}
@@ -372,6 +424,18 @@ class FillResult:
         return {"ok": False, "error": self.error or "autofill_failed"}
 
 
+def _sanitize_for_prompt(s: str) -> str:
+    """Drop Unicode bidi-override characters before the prompt
+    renders. A malicious page can navigate to a crafted URL whose
+    netloc contains an RTL override; without scrubbing, the
+    compositor's prompt body can paint a misleading site label
+    (S8 review).
+    """
+    bad = {"‪", "‫", "‬", "‭", "‮",
+           "⁦", "⁧", "⁨", "⁩"}
+    return "".join(c for c in s if c not in bad)
+
+
 @dataclass
 class AutofillOrchestrator:
     """Drives the pwd.fill round-trip + compositor popup.
@@ -379,12 +443,37 @@ class AutofillOrchestrator:
     Both client surfaces are injected so unit tests cover every branch
     without a real bridge / compositor. The session secret is set via
     :meth:`set_session_secret` after the qdistro.handshake completes.
+
+    Re-entrancy: ``fill()`` is serialised by an internal lock so two
+    concurrent fills against the same orchestrator can't queue
+    overlapping compositor prompts (M4 review). If a second fill comes
+    in while the first is parked at the compositor, the second
+    returns ``ok=False, error="busy"``.
+
+    Stale-secret recovery: when the bridge replies
+    ``intent_token_bad_hmac`` (the bridge process restarted and
+    rotated its session secret), the orchestrator drops the cached
+    secret, re-handshakes exactly once, retries the fill exactly once,
+    then surfaces the result. This avoids a permanent broken state
+    after a bridge crash (H2 correctness).
     """
 
     bridge: BridgeClient
     prompt: AutofillPromptClient
-    silo: str = "user"
+    silo: Optional[str] = None
     _session_secret: Optional[bytes] = field(default=None, repr=False)
+    _fill_lock: threading.Lock = field(
+        default_factory=threading.Lock, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.silo is None:
+            # Lazy-import to avoid a circular module-load: the
+            # clipboard_silo helper depends on env only.
+            try:
+                from qdbrowser.clipboard_silo import current_silo
+                self.silo = current_silo() or "user"
+            except Exception:  # noqa: BLE001
+                self.silo = "user"
 
     def set_session_secret(self, secret_hex: str) -> None:
         if not isinstance(secret_hex, str) or not secret_hex:
@@ -397,6 +486,59 @@ class AutofillOrchestrator:
 
     def has_session(self) -> bool:
         return self._session_secret is not None
+
+    def _do_fill(self, url: str, username: Optional[str]
+                 ) -> FillResult:
+        """Single attempt: mint → bridge → prompt → result. Does not
+        re-handshake on bad HMAC; the public :meth:`fill` does that
+        once and retries.
+        """
+        token = mint_intent_token(self._session_secret, "pwd.fill")
+        args = {
+            "url": url,
+            "username": username,
+            "intent_token": token.to_dict(),
+        }
+        reply = self.bridge.call("pwd.fill", args)
+        if not reply.get("ok"):
+            err = reply.get("error", "bridge_error")
+            if err == "vault_locked":
+                return FillResult(ok=False, error="vault_locked")
+            return FillResult(ok=False, error=err)
+        credentials = reply.get("credentials") or []
+        if not credentials:
+            return FillResult(ok=False, error="no_match")
+        candidate_usernames = tuple(
+            str(c.get("username", "")) for c in credentials
+            if c.get("username"))
+        decision = self.prompt.prompt(AutofillPrompt(
+            url=_sanitize_for_prompt(url),
+            candidate_usernames=candidate_usernames,
+            silo=self.silo or "user",
+        ))
+        if not decision.allow:
+            return FillResult(ok=False, error="autofill_denied")
+        chosen = None
+        if decision.selected_username:
+            if decision.selected_username not in candidate_usernames:
+                # A buggy or compromised compositor returned a
+                # username that wasn't on the candidate list — refuse
+                # rather than silently falling back to credentials[0]
+                # (S4 correctness review).
+                return FillResult(
+                    ok=False, error="bad_username_selection")
+            chosen = next(
+                (c for c in credentials
+                 if (str(c.get("username", ""))
+                     == decision.selected_username)),
+                None)
+        if chosen is None:
+            chosen = credentials[0]
+        return FillResult(
+            ok=True,
+            username=str(chosen.get("username", "")),
+            password=str(chosen.get("password", "")),
+        )
 
     def fill(self, url: str, *, username: Optional[str] = None,
              ) -> FillResult:
@@ -420,54 +562,55 @@ class AutofillOrchestrator:
           4. With credentials in hand, ask the compositor popup.
           5. On allow → return the credential. On deny → return
              ``autofill_denied``.
+
+        On ``intent_token_bad_hmac`` (the bridge restarted and
+        rotated its secret) the orchestrator drops the stale secret,
+        re-handshakes exactly once, retries the fill exactly once.
         """
         if not isinstance(url, str) or not url:
+            self._audit(url, "deny", "missing_url")
             return FillResult(ok=False, error="missing_url")
         if not self.has_session():
+            self._audit(url, "deny", "no_session")
             return FillResult(ok=False, error="no_session")
-        # Step 2: mint token.
-        token = mint_intent_token(self._session_secret, "pwd.fill")
-        args = {
-            "url": url,
-            "username": username,
-            "intent_token": token.to_dict(),
-        }
-        # Step 3: call bridge.
-        reply = self.bridge.call("pwd.fill", args)
-        if not reply.get("ok"):
-            err = reply.get("error", "bridge_error")
-            if err == "vault_locked":
-                return FillResult(ok=False, error="vault_locked")
-            return FillResult(ok=False, error=err)
-        credentials = reply.get("credentials") or []
-        if not credentials:
-            return FillResult(ok=False, error="no_match")
-        candidate_usernames = tuple(
-            str(c.get("username", "")) for c in credentials
-            if c.get("username"))
-        # Step 4: compositor popup.
-        decision = self.prompt.prompt(AutofillPrompt(
-            url=url,
-            candidate_usernames=candidate_usernames,
-            silo=self.silo,
-        ))
-        if not decision.allow:
-            return FillResult(ok=False, error="autofill_denied")
-        # Step 5: pick the user's choice (or the first credential if
-        # the compositor didn't echo a username back).
-        chosen = None
-        if decision.selected_username:
-            chosen = next(
-                (c for c in credentials
-                 if str(c.get("username", "")) == decision.selected_username),
-                None)
-        if chosen is None:
-            chosen = credentials[0]
-        return FillResult(
-            ok=True,
-            username=str(chosen.get("username", "")),
-            password=str(chosen.get("password", "")),
-        )
+        if not self._fill_lock.acquire(blocking=False):
+            self._audit(url, "deny", "busy")
+            return FillResult(ok=False, error="busy")
+        try:
+            result = self._do_fill(url, username)
+            if (not result.ok
+                    and result.error in ("intent_token_bad_hmac",
+                                         "missing_intent_token")):
+                # Bridge restarted → re-handshake once, retry once.
+                log.info("autofill bad_hmac, re-handshaking")
+                self._session_secret = None
+                new_secret = perform_handshake(self.bridge)
+                if not new_secret:
+                    self._audit(url, "deny", "handshake_refresh_failed")
+                    return FillResult(
+                        ok=False, error="handshake_refresh_failed")
+                self.set_session_secret(new_secret)
+                result = self._do_fill(url, username)
+            self._audit(url, "allow" if result.ok else "deny",
+                        result.error or "")
+            return result
+        finally:
+            self._fill_lock.release()
+
+    def _audit(self, url: str, decision: str, reason: str) -> None:
+        """Emit a structured journal line for every autofill outcome.
+
+        Format mirrors ClipboardGate.qml's verdict shape so operators
+        running ``journalctl --user --identifier qdbrowser`` see a
+        uniform audit trail across the two cross-process gates
+        (P04 HIGH-4 operational).
+        """
+        try:
+            log.info("autofill url=%s silo=%s decision=%s reason=%s",
+                     _sanitize_for_prompt(url),
+                     self.silo or "", decision, reason or "")
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ---------------------------------------------------------------------------

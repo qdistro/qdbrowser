@@ -191,6 +191,19 @@ def main(argv=None):
     except Exception as exc:  # noqa: BLE001
         log.warning("qdistro App1 registration failed: %s", exc)
 
+    # Stamp the silo badge onto the window title so a user with
+    # multiple qdbrowser windows in different silos has a visible
+    # indication of which one they're looking at. See
+    # plan2/research/qdbrowser-clipboard-silo-tag.md for the
+    # bigger picture (wp_security_context_v1 attestation is the
+    # follow-up; this is the title-shim that ships today).
+    try:
+        from qdbrowser.clipboard_silo import stamp_title
+        base_title = window.windowTitle() or "qdbrowser"
+        stamp_title(window, base_title)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("qdbrowser silo title stamp failed: %s", exc)
+
     sys.exit(app.exec())
 
 
