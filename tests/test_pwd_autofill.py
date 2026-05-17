@@ -1,0 +1,248 @@
+"""Tests for pwd_autofill — the qdbrowser-side autofill orchestrator.
+
+Mocks the bridge + compositor-prompt clients so the round-trip can
+run without real D-Bus. Covers:
+
+  * Intent-token mint shape matches the bridge's verify expectation.
+  * Orchestrator surfaces vault_locked / no_match / autofill_denied
+    distinctly.
+  * Approve-and-fill path returns the credential.
+  * to_extension_reply() collapses errors to {ok:False, error:...}.
+"""
+from __future__ import annotations
+
+import hashlib
+import hmac
+from dataclasses import dataclass
+
+
+from qdbrowser.plugins import pwd_autofill as pa
+
+
+# ---------------------------------------------------------------------------
+# Intent token primitives
+# ---------------------------------------------------------------------------
+
+class TestMintIntentToken:
+    def test_basic_shape(self):
+        secret = b"x" * 32
+        tok = pa.mint_intent_token(secret, "pwd.fill",
+                                   now_fn=lambda: 1234567.0)
+        assert tok.op == "pwd.fill"
+        assert tok.ts == 1234567.0
+        assert isinstance(tok.request_id, str) and len(tok.request_id) == 32
+        # Re-derive the HMAC and confirm it matches.
+        canonical = f"{tok.request_id}|{tok.ts}|{tok.op}".encode("utf-8")
+        expected = hmac.new(secret, canonical, hashlib.sha256).hexdigest()
+        assert tok.hmac_hex == expected
+
+    def test_request_id_unique_across_mints(self):
+        secret = b"y" * 32
+        ids = {pa.mint_intent_token(secret, "pwd.fill").request_id
+               for _ in range(50)}
+        assert len(ids) == 50
+
+    def test_to_dict(self):
+        secret = b"z" * 32
+        tok = pa.mint_intent_token(secret, "pwd.fill")
+        d = tok.to_dict()
+        assert set(d.keys()) == {"request_id", "ts", "op", "hmac"}
+
+
+# ---------------------------------------------------------------------------
+# Fakes
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _FakeBridge(pa.BridgeClient):
+    """Records calls and answers from a programmable reply table.
+
+    Keyed by op; each entry can be a dict (returned as-is) or a
+    callable ``(args) -> dict``. Default answer is
+    ``{"ok": False, "error": "no_reply"}``.
+    """
+    answers: dict
+    calls: list
+
+    @classmethod
+    def with_answers(cls, answers):
+        return cls(answers=answers, calls=[])
+
+    def call(self, op, args):
+        self.calls.append((op, dict(args)))
+        a = self.answers.get(op)
+        if a is None:
+            return {"ok": False, "error": "no_reply"}
+        if callable(a):
+            return a(args)
+        return dict(a)
+
+
+@dataclass
+class _FakePrompt(pa.AutofillPromptClient):
+    decision: pa.AutofillDecision
+    prompted: list
+
+    @classmethod
+    def with_decision(cls, allow, username=None, reason=""):
+        return cls(
+            decision=pa.AutofillDecision(
+                allow=allow, selected_username=username, reason=reason),
+            prompted=[])
+
+    def prompt(self, payload):
+        self.prompted.append(payload)
+        return self.decision
+
+
+SECRET_HEX = ("00" * 32)
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator branches
+# ---------------------------------------------------------------------------
+
+class TestOrchestratorFill:
+    def test_no_session_secret(self):
+        bridge = _FakeBridge.with_answers({})
+        prompt = _FakePrompt.with_decision(allow=True)
+        o = pa.AutofillOrchestrator(bridge=bridge, prompt=prompt)
+        r = o.fill("https://example.com/")
+        assert r.ok is False
+        assert r.error == "no_session"
+        assert bridge.calls == []
+
+    def test_missing_url(self):
+        bridge = _FakeBridge.with_answers({})
+        prompt = _FakePrompt.with_decision(allow=True)
+        o = pa.AutofillOrchestrator(bridge=bridge, prompt=prompt)
+        o.set_session_secret(SECRET_HEX)
+        r = o.fill("")
+        assert r.ok is False
+        assert r.error == "missing_url"
+
+    def test_vault_locked(self):
+        bridge = _FakeBridge.with_answers({
+            "pwd.fill": {"ok": False, "error": "vault_locked"}})
+        prompt = _FakePrompt.with_decision(allow=True)
+        o = pa.AutofillOrchestrator(bridge=bridge, prompt=prompt)
+        o.set_session_secret(SECRET_HEX)
+        r = o.fill("https://example.com/")
+        assert r.ok is False
+        assert r.error == "vault_locked"
+        assert prompt.prompted == []  # never reached the compositor.
+
+    def test_no_match(self):
+        bridge = _FakeBridge.with_answers({
+            "pwd.fill": {"ok": True, "credentials": []}})
+        prompt = _FakePrompt.with_decision(allow=True)
+        o = pa.AutofillOrchestrator(bridge=bridge, prompt=prompt)
+        o.set_session_secret(SECRET_HEX)
+        r = o.fill("https://example.com/")
+        assert r.ok is False
+        assert r.error == "no_match"
+        assert prompt.prompted == []
+
+    def test_admin_deny(self):
+        bridge = _FakeBridge.with_answers({"pwd.fill": {
+            "ok": True,
+            "credentials": [{"username": "alice", "password": "s3cret"}],
+        }})
+        prompt = _FakePrompt.with_decision(allow=False, reason="user_no")
+        o = pa.AutofillOrchestrator(bridge=bridge, prompt=prompt)
+        o.set_session_secret(SECRET_HEX)
+        r = o.fill("https://example.com/")
+        assert r.ok is False
+        assert r.error == "autofill_denied"
+        assert len(prompt.prompted) == 1
+        # The candidate usernames must have been surfaced to the prompt.
+        assert prompt.prompted[0].candidate_usernames == ("alice",)
+
+    def test_admin_allow_default_username(self):
+        bridge = _FakeBridge.with_answers({"pwd.fill": {
+            "ok": True,
+            "credentials": [{"username": "alice", "password": "s3cret"}],
+        }})
+        prompt = _FakePrompt.with_decision(allow=True)
+        o = pa.AutofillOrchestrator(bridge=bridge, prompt=prompt,
+                                     silo="work")
+        o.set_session_secret(SECRET_HEX)
+        r = o.fill("https://example.com/")
+        assert r.ok is True
+        assert r.username == "alice"
+        assert r.password == "s3cret"
+        assert prompt.prompted[0].silo == "work"
+
+    def test_admin_allow_with_selected_username(self):
+        bridge = _FakeBridge.with_answers({"pwd.fill": {
+            "ok": True,
+            "credentials": [
+                {"username": "alice", "password": "s1"},
+                {"username": "bob", "password": "s2"},
+            ],
+        }})
+        prompt = _FakePrompt.with_decision(allow=True, username="bob")
+        o = pa.AutofillOrchestrator(bridge=bridge, prompt=prompt)
+        o.set_session_secret(SECRET_HEX)
+        r = o.fill("https://example.com/")
+        assert r.ok is True
+        assert r.username == "bob"
+        assert r.password == "s2"
+
+    def test_intent_token_in_bridge_call(self):
+        bridge = _FakeBridge.with_answers({"pwd.fill": {
+            "ok": True,
+            "credentials": [{"username": "alice", "password": "s"}],
+        }})
+        prompt = _FakePrompt.with_decision(allow=True)
+        o = pa.AutofillOrchestrator(bridge=bridge, prompt=prompt)
+        o.set_session_secret(SECRET_HEX)
+        o.fill("https://example.com/")
+        assert len(bridge.calls) == 1
+        op, args = bridge.calls[0]
+        assert op == "pwd.fill"
+        assert args["url"] == "https://example.com/"
+        token = args["intent_token"]
+        assert token["op"] == "pwd.fill"
+        # HMAC matches what the bridge would compute.
+        secret = bytes.fromhex(SECRET_HEX)
+        canonical = (f"{token['request_id']}|{token['ts']}|"
+                     f"{token['op']}").encode("utf-8")
+        expected = hmac.new(secret, canonical, hashlib.sha256).hexdigest()
+        assert token["hmac"] == expected
+
+
+class TestFillResult:
+    def test_to_extension_reply_ok(self):
+        r = pa.FillResult(ok=True, username="u", password="p")
+        assert r.to_extension_reply() == {
+            "ok": True, "username": "u", "password": "p"}
+
+    def test_to_extension_reply_err(self):
+        r = pa.FillResult(ok=False, error="autofill_denied")
+        assert r.to_extension_reply() == {
+            "ok": False, "error": "autofill_denied"}
+
+    def test_to_extension_reply_default_err(self):
+        r = pa.FillResult(ok=False)
+        assert r.to_extension_reply() == {
+            "ok": False, "error": "autofill_failed"}
+
+
+class TestPerformHandshake:
+    def test_success(self):
+        bridge = _FakeBridge.with_answers({
+            "qdistro.handshake": {"ok": True,
+                                    "session_secret_hex": "deadbeef"}})
+        secret = pa.perform_handshake(bridge)
+        assert secret == "deadbeef"
+
+    def test_failure(self):
+        bridge = _FakeBridge.with_answers({
+            "qdistro.handshake": {"ok": False, "error": "x"}})
+        assert pa.perform_handshake(bridge) is None
+
+    def test_empty_secret(self):
+        bridge = _FakeBridge.with_answers({
+            "qdistro.handshake": {"ok": True, "session_secret_hex": ""}})
+        assert pa.perform_handshake(bridge) is None

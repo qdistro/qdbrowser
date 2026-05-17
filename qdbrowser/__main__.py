@@ -180,6 +180,17 @@ def main(argv=None):
     else:
         window.show()
 
+    # qdistro App1 receiver registration. Best-effort; failures (no
+    # session bus, dbus-python missing) degrade to "browser still works,
+    # not visible to qdshell PodApps." See qdistro_integration.maybe_install
+    # for the contract. We stash the receiver on the app object so it
+    # survives across the event loop (letting it GC drops the bus claim).
+    try:
+        from qdbrowser import qdistro_integration as _qdistro
+        app._qdistro_app1_receiver = _qdistro.maybe_install(window)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("qdistro App1 registration failed: %s", exc)
+
     sys.exit(app.exec())
 
 
