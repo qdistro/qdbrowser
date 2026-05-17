@@ -16,7 +16,7 @@ import hmac
 from dataclasses import dataclass
 
 
-from qdbrowser.plugins import pwd_autofill as pa
+from qdbrowser import pwd_autofill as pa
 
 
 # ---------------------------------------------------------------------------
