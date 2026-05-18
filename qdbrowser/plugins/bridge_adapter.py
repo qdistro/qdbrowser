@@ -40,20 +40,17 @@ log = logging.getLogger("qdbrowser.bridge_adapter")
 # one of them is enough to flip the adapter active.
 #
 # Note: the pwd daemon's canonical well-known name is
-# ``com.qdistro.Pwd1`` on the SYSTEM bus
-# (see qdistro/pwd/qdistro_pwd_daemon.py). The legacy
-# ``org.qdistro.Pwd1`` entry is preserved for backwards-compatibility
-# with development installs that still use the old name; the canonical
-# entry below is what production matches.
+# ``org.qdistro.Pwd1`` on the SYSTEM bus
+# (see qdistro/pwd/qdistro_pwd_daemon.py). The full ``org.qdistro.*``
+# rename has landed across the tree, so no legacy alias is kept here.
 _DAEMON_NAMES = (
     "org.qdistro.Browser1",
     "org.qdistro.Downloads1",
     "org.qdistro.Pwd1",
-    "com.qdistro.Pwd1",
 )
 _SYSTEM_DAEMON_NAMES = (
-    "com.qdistro.Pwd1",
-    "com.qdistro.AdminBroker1",
+    "org.qdistro.Pwd1",
+    "org.qdistro.AdminBroker1",
 )
 
 

@@ -48,7 +48,7 @@ def fake_sdk(monkeypatch):
     send_menu_calls: list[dict] = []
 
     fake_receiver = types.SimpleNamespace(
-        service_name="com.qdistro.QdBrowser.uid1000",
+        service_name="org.qdistro.QdBrowser.uid1000",
         silo="work",
     )
 
@@ -60,7 +60,7 @@ def fake_sdk(monkeypatch):
 
     def send_to_menu_targets(*, self_service=None, kind=None):
         send_menu_calls.append({"self": self_service, "kind": kind})
-        return [{"uid": 2000, "service": "com.qdistro.QNotebook.uid2000",
+        return [{"uid": 2000, "service": "org.qdistro.QNotebook.uid2000",
                  "name": "QNotebook", "silo": "personal"}]
 
     def send_to(uid, service, kind, payload):
@@ -105,7 +105,7 @@ class TestMaybeInstall:
         win = MagicMock()
         r = integ.maybe_install(win)
         assert r is not None
-        assert r.service_name == "com.qdistro.QdBrowser.uid1000"
+        assert r.service_name == "org.qdistro.QdBrowser.uid1000"
         assert len(register_calls) == 1
         name, friendly, silo, kinds, on_receive = register_calls[0]
         assert name == "QdBrowser"
@@ -175,10 +175,10 @@ class TestSendTo:
 
     def test_send_payload(self, fake_sdk):
         integ, _, send_to_calls, _ = fake_sdk
-        ok = integ.send_payload(2000, "com.qdistro.QNotebook.uid2000",
+        ok = integ.send_payload(2000, "org.qdistro.QNotebook.uid2000",
                                  "https://example.com/")
         assert ok is True
-        assert send_to_calls == [(2000, "com.qdistro.QNotebook.uid2000",
+        assert send_to_calls == [(2000, "org.qdistro.QNotebook.uid2000",
                                   "text/uri-list", "https://example.com/")]
 
     def test_send_payload_no_sdk(self, no_sdk):

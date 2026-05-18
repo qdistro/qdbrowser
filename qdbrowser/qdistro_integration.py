@@ -1,6 +1,6 @@
 """Wire qdbrowser into the qdistro App1 launcher contract.
 
-On registration, qdbrowser claims ``com.qdistro.QdBrowser.uid<NNNN>``
+On registration, qdbrowser claims ``org.qdistro.QdBrowser.uid<NNNN>``
 on the session bus. Inbound payloads with a URL-ish kind are opened
 in a new tab. Mirrors qfileman/qterminator/qnotebook's
 ``qdistro_integration.py`` (P03 pattern).
@@ -227,7 +227,7 @@ def send_to_targets(*, kind: str = "text/uri-list") -> list[dict]:
     if _app_receiver is None:
         return []
     try:
-        self_service = f"com.qdistro.{APP_FRIENDLY_NAME}.uid{os.geteuid()}"
+        self_service = f"org.qdistro.{APP_FRIENDLY_NAME}.uid{os.geteuid()}"
         return _app_receiver.send_to_menu_targets(
             self_service=self_service, kind=kind)
     except Exception as e:  # noqa: BLE001

@@ -20,6 +20,15 @@ def test_commands_present(window):
     assert any("Tab stack" in l for l in labels)
 
 
-def test_list_works_with_no_groups(window):
+def test_list_works_with_no_groups(window, monkeypatch):
+    from PyQt6.QtWidgets import QMessageBox
+
+    shown = []
+    monkeypatch.setattr(
+        QMessageBox, "information",
+        lambda _parent, title, msg: shown.append((title, msg)),
+    )
+
     plug = window.plugins._instances["tab_stacks"]
     plug._list()  # must not raise
+    assert shown == [("Tab stacks", "(no groups)")]

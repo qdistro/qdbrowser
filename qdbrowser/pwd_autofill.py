@@ -10,7 +10,7 @@ Flow (high level):
   2. The plugin mints an intent token (HMAC against the per-session
      secret it fetched during the bridge handshake), then calls
      ``pwd.fill`` on the qdbrowser browser_bridge.
-  3. The bridge forwards to ``com.qdistro.Pwd1.Fill`` via D-Bus.
+  3. The bridge forwards to ``org.qdistro.Pwd1.Fill`` via D-Bus.
   4. The pwd daemon either returns a candidate credential set OR
      reports ``vault_locked`` — in which case it has already
      triggered the polkit unlock prompt.
@@ -61,7 +61,7 @@ log = logging.getLogger("qdbrowser.pwd_autofill")
 # needs one must import from here).
 #
 #   bridge:     ``org.qdistro.BrowserBridge.<ppid>`` (SESSION)
-#   pwd:        ``com.qdistro.Pwd1`` (SYSTEM)         — daemon canonical
+#   pwd:        ``org.qdistro.Pwd1`` (SYSTEM)         — daemon canonical
 #   compositor: ``org.qdistro.Compositor1`` (SESSION) — popup
 # ---------------------------------------------------------------------------
 
@@ -69,9 +69,9 @@ BRIDGE_BUS_PREFIX = "org.qdistro.BrowserBridge."
 BRIDGE_OBJ_PATH = "/org/qdistro/BrowserBridge"
 BRIDGE_IFACE = "org.qdistro.BrowserBridge"
 
-PWD_BUS = "com.qdistro.Pwd1"
-PWD_OBJ_PATH = "/com/qdistro/Pwd1"
-PWD_IFACE = "com.qdistro.Pwd1"
+PWD_BUS = "org.qdistro.Pwd1"
+PWD_OBJ_PATH = "/org/qdistro/Pwd1"
+PWD_IFACE = "org.qdistro.Pwd1"
 
 # Compositor popup interface. ``Compositor1`` is the qdshell-side
 # autofill prompt; the well-known name lives on SESSION. P04 lands the
