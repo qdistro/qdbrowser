@@ -11,6 +11,10 @@ requires-python = ">=3.10"
 dependencies = [
     "PyQt6>=6.5",
     "PyQt6-WebEngine>=6.5",
+    # pwd_autofill.py's production RPC client. Pure-Python so the
+    # browser stays C-extension-free; same dep the daemon-side
+    # qdistro_browser_bridge module uses to talk back.
+    "jeepney>=0.8",
 ]
 
 [project.optional-dependencies]
