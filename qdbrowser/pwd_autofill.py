@@ -88,7 +88,9 @@ def select_bridge_names(names: list[str]) -> list[tuple[int, str]]:
     """Filter session-bus names to legit bridge instances + sort by ppid.
 
     Mirrors :func:`qdistro_browser_bridge_client._select_bridges_by_ppid`
-    — the suffix after :data:`BRIDGE_BUS_PREFIX` must be all-digits, so
+    — the suffix after :data:`BRIDGE_BUS_PREFIX` must be all-digits OR a
+    ``p<digits>`` form (D-Bus name elements can't start with a digit,
+    so spawners prepend a ``p`` to the ppid). Either form is accepted;
     a same-uid attacker that claims ``org.qdistro.BrowserBridge.evil``
     is filtered out (P04 H1 security review). Defined here so both
     :class:`JeepneyBridgeClient` and any future consumer call ONE
@@ -104,9 +106,14 @@ def select_bridge_names(names: list[str]) -> list[tuple[int, str]]:
         if n.startswith(":"):
             continue
         suffix = n[len(BRIDGE_BUS_PREFIX):]
-        if not suffix.isdigit():
+        if suffix.isdigit():
+            ppid_int = int(suffix)
+        elif (len(suffix) >= 2 and suffix[0] == "p"
+              and suffix[1:].isdigit()):
+            ppid_int = int(suffix[1:])
+        else:
             continue
-        out.append((int(suffix), n))
+        out.append((ppid_int, n))
     out.sort(key=lambda t: t[0])
     return out
 
