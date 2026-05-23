@@ -8,61 +8,81 @@ import queue
 import socket
 import threading
 import time
+import traceback
 
 import pytest
+
+
+_RPC_TIMEOUT_S = float(os.environ.get("QDBROWSER_TEST_RPC_TIMEOUT", "15"))
 
 
 class _ThreadedConn:
     """Run one socket on a worker thread; main thread pumps Qt events."""
 
-    def __init__(self, path, qapp):
+    def __init__(self, path, qapp, timeout_s: float = _RPC_TIMEOUT_S):
         self._path = path
         self._qapp = qapp
+        self._timeout_s = timeout_s
         self._next_id = 1
         self._sock = None
         self._lock = threading.Lock()
 
     def connect(self):
         self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._sock.settimeout(self._timeout_s)
         self._sock.connect(self._path)
 
     def call(self, method, **params):
-        rid = self._next_id
-        self._next_id += 1
-        out_q: queue.Queue = queue.Queue()
+        with self._lock:
+            rid = self._next_id
+            self._next_id += 1
+            out_q: queue.Queue = queue.Queue()
 
-        def _worker():
-            req = {"jsonrpc": "2.0", "id": rid,
-                   "method": method, "params": params}
-            self._sock.sendall((json.dumps(req) + "\n").encode())
-            buf = b""
-            while True:
-                while b"\n" not in buf:
-                    chunk = self._sock.recv(65536)
-                    if not chunk:
-                        out_q.put(None)
+            def _worker():
+                try:
+                    req = {"jsonrpc": "2.0", "id": rid,
+                           "method": method, "params": params}
+                    self._sock.sendall((json.dumps(req) + "\n").encode())
+                    buf = b""
+                    while True:
+                        while b"\n" not in buf:
+                            chunk = self._sock.recv(65536)
+                            if not chunk:
+                                out_q.put(("error", "agent_control closed"))
+                                return
+                            buf += chunk
+                        line, _, rest = buf.partition(b"\n")
+                        buf = rest
+                        if not line.strip():
+                            continue
+                        msg = json.loads(line.decode())
+                        if msg.get("id") != rid:
+                            continue
+                        out_q.put(("ok", msg))
                         return
-                    buf += chunk
-                line, _, rest = buf.partition(b"\n")
-                buf = rest
-                if not line.strip():
-                    continue
-                msg = json.loads(line.decode())
-                if msg.get("id") != rid:
-                    continue
-                out_q.put(msg)
-                return
+                except Exception:
+                    out_q.put(("error", traceback.format_exc()))
 
-        t = threading.Thread(target=_worker)
-        t.start()
-        deadline = time.time() + 5.0
-        while t.is_alive() and time.time() < deadline:
-            self._qapp.processEvents()
-            time.sleep(0.005)
-        t.join(2.0)
-        if out_q.empty():
-            raise RuntimeError(f"agent call {method} timed out")
-        return out_q.get_nowait()
+            t = threading.Thread(target=_worker, daemon=True)
+            t.start()
+            deadline = time.monotonic() + self._timeout_s
+            while time.monotonic() < deadline:
+                try:
+                    kind, payload = out_q.get_nowait()
+                except queue.Empty:
+                    kind = payload = None
+                if kind == "ok":
+                    return payload
+                if kind == "error":
+                    raise RuntimeError(
+                        f"agent call {method} failed on {self._path} "
+                        f"with params {params!r}:\n{payload}")
+                self._qapp.processEvents()
+                time.sleep(0.01)
+            raise RuntimeError(
+                f"agent call {method} timed out after "
+                f"{self._timeout_s:.1f}s on {self._path} "
+                f"with params {params!r}; worker_alive={t.is_alive()}")
 
     def close(self):
         if self._sock:

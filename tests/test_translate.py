@@ -131,7 +131,8 @@ def test_translate_page_invokes_runjs(window):
     assert "innerText" in js  # extract script
 
 
-def test_translate_uses_env_api_key(monkeypatch, fresh_config, window):
+def test_translate_uses_env_api_key(monkeypatch, fresh_config, window,
+                                    wait_for_qt):
     from qdbrowser.plugins import translate as t
     monkeypatch.setenv("QDBROWSER_OPENAI_API_KEY", "env-key-123")
     captured = {}
@@ -144,17 +145,16 @@ def test_translate_uses_env_api_key(monkeypatch, fresh_config, window):
     plug = window.plugins._instances["translate"]
     plug._pending_webview = window._active_webview
     plug._kick_off(window._active_webview, "hello world", None)
-    # Worker thread runs async — give it a moment.
-    import time
-    deadline = time.time() + 2.0
-    while "api_key" not in captured and time.time() < deadline:
-        from PyQt6.QtWidgets import QApplication
-        QApplication.instance().processEvents()
-        time.sleep(0.01)
+    wait_for_qt(
+        lambda: "api_key" in captured,
+        timeout_ms=10000,
+        description="translate worker to read the env API key",
+    )
     assert captured.get("api_key") == "env-key-123"
 
 
-def test_translate_truncates_to_max_chars(monkeypatch, fresh_config, window):
+def test_translate_truncates_to_max_chars(monkeypatch, fresh_config, window,
+                                         wait_for_qt):
     from qdbrowser.config import Config
     from qdbrowser.plugins import translate as t
     Config().set("translate", "max_chars", 10)
@@ -168,12 +168,11 @@ def test_translate_truncates_to_max_chars(monkeypatch, fresh_config, window):
     plug = window.plugins._instances["translate"]
     plug._pending_webview = window._active_webview
     plug._kick_off(window._active_webview, "A" * 1000, None)
-    import time
-    from PyQt6.QtWidgets import QApplication
-    deadline = time.time() + 2.0
-    while "user" not in captured and time.time() < deadline:
-        QApplication.instance().processEvents()
-        time.sleep(0.01)
+    wait_for_qt(
+        lambda: "user" in captured,
+        timeout_ms=10000,
+        description="translate worker to receive truncated text",
+    )
     assert len(captured["user"]) == 10
 
 

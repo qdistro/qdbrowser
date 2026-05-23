@@ -6,45 +6,67 @@ network — every URL is about:blank or a synthesized data: URL.
 
 import json
 import os
+import queue
 import socket
+import threading
 import time
+import traceback
 
 import pytest
+
+
+_RPC_TIMEOUT_S = float(os.environ.get("QDBROWSER_TEST_RPC_TIMEOUT", "15"))
 
 
 def _connect_and_call(socket_path, method, qapp, **params):
     """Send a JSON-RPC request on a worker thread while pumping the Qt
     event loop in this thread — the server is on this same event loop,
     so blocking recv here would deadlock."""
-    import threading
-    result = {}
+    result_q: queue.Queue = queue.Queue()
 
     def _worker():
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.connect(socket_path)
-        req = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
-        s.sendall((json.dumps(req) + "\n").encode())
-        buf = b""
-        while b"\n" not in buf:
-            chunk = s.recv(65536)
-            if not chunk:
-                break
-            buf += chunk
-        s.close()
-        result["raw"] = buf.split(b"\n", 1)[0]
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.settimeout(_RPC_TIMEOUT_S)
+                s.connect(socket_path)
+                req = {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": method,
+                    "params": params,
+                }
+                s.sendall((json.dumps(req) + "\n").encode())
+                buf = b""
+                while b"\n" not in buf:
+                    chunk = s.recv(65536)
+                    if not chunk:
+                        break
+                    buf += chunk
+                result_q.put(("ok", buf.split(b"\n", 1)[0]))
+        except Exception:
+            result_q.put(("error", traceback.format_exc()))
 
-    t = threading.Thread(target=_worker)
+    t = threading.Thread(target=_worker, daemon=True)
     t.start()
-    deadline = time.time() + 5.0
-    while t.is_alive() and time.time() < deadline:
+    deadline = time.monotonic() + _RPC_TIMEOUT_S
+    while time.monotonic() < deadline:
+        try:
+            kind, payload = result_q.get_nowait()
+        except queue.Empty:
+            kind = payload = None
+        if kind == "ok":
+            assert payload, f"agent call {method} closed without a response"
+            return json.loads(payload.decode())
+        if kind == "error":
+            pytest.fail(
+                f"agent call {method} failed on {socket_path} "
+                f"with params {params!r}:\n{payload}")
         qapp.processEvents()
-        time.sleep(0.005)
-    t.join(2.0)
-    assert "raw" in result, f"agent call {method} timed out"
-    return json.loads(result["raw"].decode())
-
-
-import time  # noqa: E402
+        time.sleep(0.01)
+    pytest.fail(
+        f"agent call {method} timed out after {_RPC_TIMEOUT_S:.1f}s "
+        f"on {socket_path} with params {params!r}; "
+        f"worker_alive={t.is_alive()}")
 
 
 @pytest.fixture

@@ -114,7 +114,7 @@ class TestMaybeInstall:
         assert "text/plain" in kinds
         assert callable(on_receive)
 
-    def test_receiver_callback_opens_url(self, fake_sdk, qtbot):
+    def test_receiver_callback_opens_url(self, fake_sdk, wait_for_qt):
         integ, register_calls, _, _ = fake_sdk
         win = MagicMock()
         integ.maybe_install(win)
@@ -122,7 +122,11 @@ class TestMaybeInstall:
         # Simulate an inbound payload — uri-list with one URL.
         on_receive("text/uri-list", "https://example.com/\n")
         # The callback bounces through QTimer.singleShot; pump events.
-        qtbot.wait(50)
+        wait_for_qt(
+            lambda: win.new_tab.called,
+            timeout_ms=2000,
+            description="App1 receive callback to open a new tab",
+        )
         win.new_tab.assert_called_once()
         kwargs = win.new_tab.call_args.kwargs
         assert kwargs.get("url") == "https://example.com/"

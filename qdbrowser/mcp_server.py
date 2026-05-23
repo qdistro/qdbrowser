@@ -133,7 +133,11 @@ def build_server(client: AgentControlClient, mcp=None):
     @mcp.tool()
     def open_tab(url: Optional[str] = None, background: bool = False,
                  profile: str = "default") -> dict:
-        """Open a new tab. Returns ``{id}``."""
+        """Open a new tab. Returns ``{id}``.
+
+        For smoke tests or RPC plumbing checks, prefer ``about:blank``,
+        a ``data:text/html`` URL, or a localhost fixture instead of a
+        public web site; external pages can be slow or unavailable."""
         return client.call("open_tab", url=url, background=background,
                            profile=profile)
 
@@ -149,7 +153,11 @@ def build_server(client: AgentControlClient, mcp=None):
 
     @mcp.tool()
     def navigate(tab_id: int, url: str) -> dict:
-        """Navigate a tab. URL with no scheme is treated as a search query."""
+        """Navigate a tab.
+
+        URL with no scheme is treated as a search query. For deterministic
+        automation, use ``about:blank``, ``data:text/html`` URLs, or local
+        test servers when the page content itself is not under test."""
         return client.call("navigate", tab_id=tab_id, url=url)
 
     @mcp.tool()
@@ -222,7 +230,12 @@ def build_server(client: AgentControlClient, mcp=None):
 
     @mcp.tool()
     def type_text(tab_id: int, text: str) -> dict:
-        """Type literal text into the focused element."""
+        """Type literal text into the focused element.
+
+        Reliable sequence: call `query_selector`, click the center of
+        the returned rect with `click_at`, then `type_text`. For React,
+        Vue, and similar apps, assert the result with `wait_for_selector`
+        or `eval_js` rather than sleeping."""
         return client.call("type_text", tab_id=tab_id, text=text)
 
     @mcp.tool()
@@ -247,7 +260,11 @@ def build_server(client: AgentControlClient, mcp=None):
 
     @mcp.tool()
     def eval_js(tab_id: int, script: str, timeout: float = 5.0) -> dict:
-        """Run JavaScript and return the (JSON-serializable) result."""
+        """Run JavaScript and return the JSON-serializable result.
+
+        Keep scripts small and self-contained. If waiting for a DOM
+        change, prefer `wait_for_selector`; it polls with a deadline and
+        produces a clearer success condition than an arbitrary delay."""
         return client.call("eval_js", tab_id=tab_id, script=script,
                            timeout=timeout)
 
