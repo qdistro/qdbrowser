@@ -23,12 +23,18 @@ def test_commands_present(window):
 def test_list_works_with_no_groups(window, monkeypatch):
     from PyQt6.QtWidgets import QMessageBox
 
-    shown = []
+    seen = {}
     monkeypatch.setattr(
-        QMessageBox, "information",
-        lambda _parent, title, msg: shown.append((title, msg)),
+        QMessageBox,
+        "information",
+        lambda parent, title, msg: seen.update(
+            {"parent": parent, "title": title, "msg": msg}),
     )
 
     plug = window.plugins._instances["tab_stacks"]
     plug._list()  # must not raise
-    assert shown == [("Tab stacks", "(no groups)")]
+    assert seen == {
+        "parent": window,
+        "title": "Tab stacks",
+        "msg": "(no groups)",
+    }

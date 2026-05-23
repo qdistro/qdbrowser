@@ -32,6 +32,8 @@ def test_stays_inactive_when_no_daemons(monkeypatch):
 def test_activates_when_daemons_present(monkeypatch):
     import qdbrowser.plugins.bridge_adapter as ba
     monkeypatch.setattr(ba, "_daemons_available", lambda: True)
+    monkeypatch.setattr(
+        ba.BridgeAdapterPlugin, "_claim_bus_name", lambda self: True)
     plug = ba.BridgeAdapterPlugin()
     plug.activate(app_controller=object())
     assert plug.active is True

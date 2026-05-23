@@ -65,6 +65,27 @@ import pytest
 from PyQt6.QtCore import QCoreApplication
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWebEngineWidgets import QWebEngineView
+
+
+def _drain_qt_events(app, rounds=10):
+    for _ in range(rounds):
+        QCoreApplication.sendPostedEvents(None, 0)
+        app.processEvents()
+        gc.collect()
+        QTest.qWait(5)
+        app.processEvents()
+
+
+def _dispose_webengine_widgets(app):
+    for widget in list(app.allWidgets()):
+        if isinstance(widget, QWebEngineView):
+            page = widget.page()
+            widget.stop()
+            widget.setParent(None)
+            widget.deleteLater()
+            if page is not None:
+                page.deleteLater()
 
 
 def _restore_env():
@@ -73,11 +94,6 @@ def _restore_env():
             os.environ.pop(key, None)
         else:
             os.environ[key] = value
-
-
-def pytest_sessionfinish(session, exitstatus):
-    _restore_env()
-    shutil.rmtree(_TEST_HOME, ignore_errors=True)
 
 
 def pytest_collection_modifyitems(config, items):
@@ -100,12 +116,36 @@ def _cleanup_after_test():
     yield
     app = QApplication.instance()
     if app:
-        for _ in range(8):
-            QCoreApplication.sendPostedEvents(None, 0)
-            app.processEvents()
-            gc.collect()
-            QTest.qWait(5)
-            app.processEvents()
+        app.closeAllWindows()
+        _dispose_webengine_widgets(app)
+        _drain_qt_events(app, rounds=12)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Release QtWebEngine objects in dependency order before Python exit."""
+    try:
+        app = QApplication.instance()
+        if app:
+            app.closeAllWindows()
+            _dispose_webengine_widgets(app)
+            _drain_qt_events(app, rounds=20)
+        try:
+            from qdbrowser import webview as wv_mod
+        except Exception:
+            return
+        profiles = list(getattr(wv_mod, "_PROFILES", {}).values())
+        getattr(wv_mod, "_PROFILE_LISTENERS", []).clear()
+        getattr(wv_mod, "_PROFILES", {}).clear()
+        for profile in profiles:
+            try:
+                profile.deleteLater()
+            except RuntimeError:
+                pass
+        if app:
+            _drain_qt_events(app, rounds=20)
+    finally:
+        _restore_env()
+        shutil.rmtree(_TEST_HOME, ignore_errors=True)
 
 
 @pytest.fixture

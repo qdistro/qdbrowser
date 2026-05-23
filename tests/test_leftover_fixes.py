@@ -295,6 +295,7 @@ def test_window_disconnect_plugin_idempotent(window):
 def test_mcp_wait_for_load_description_steers_away_from_spa():
     """Description must mention SPA / wait_for_selector to keep an
     LLM from blindly using wait_for_load after click_at."""
+    pytest.importorskip("mcp.server.fastmcp")
     from qdbrowser.mcp_server import AgentControlClient, build_server
     client = AgentControlClient("/tmp/never-connected.sock")
     server = build_server(client)
@@ -312,6 +313,7 @@ def test_mcp_wait_for_load_description_steers_away_from_spa():
 
 
 def test_mcp_click_at_description_mentions_query_selector():
+    pytest.importorskip("mcp.server.fastmcp")
     from qdbrowser.mcp_server import AgentControlClient, build_server
     client = AgentControlClient("/tmp/never-connected.sock")
     server = build_server(client)
