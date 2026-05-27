@@ -205,14 +205,15 @@ DEFAULTS = {
         "navigate_denylist": [],
         # ---- Layer 4: rate limiting (per-client token buckets) ----
         # All limits are sliding-window counts over the trailing 60s.
-        # ``0`` disables a category (so ``eval_rate_limit_per_minute = 0``
-        # under ``policy_enforced = true`` is the secure default: no JS
-        # eval at all). Negative values are treated as 0. The total
-        # bucket applies to *every* RPC including screenshots/eval;
-        # the per-category buckets are additional constraints.
-        "rate_limit_per_minute": 120,
-        "screenshot_rate_limit_per_minute": 10,
-        "eval_rate_limit_per_minute": 0,
+        # ``0`` disables a category. Negative values are treated as 0.
+        # The total bucket applies to *every* RPC including
+        # screenshots/eval; the per-category buckets are additional
+        # constraints. Defaults: 10 req/s (600/min), 5 screenshots/min,
+        # 3 eval_js/min, 10 open_tab/min.
+        "rate_limit_per_minute": 600,
+        "screenshot_rate_limit_per_minute": 5,
+        "eval_rate_limit_per_minute": 3,
+        "open_tab_rate_limit_per_minute": 10,
         # ---- Layer 5: broker mediation ----
         # When enabled, calls to ``_DEFAULT_DENIED_METHODS`` (or any
         # method in ``broker_mediated_methods``) get a synchronous
@@ -235,6 +236,12 @@ DEFAULTS = {
         # ``/proc/<pid>/exe`` digest is not in the resolved set with
         # ``client_not_allowed``.
         "allowed_client_exes": [],
+        # When true, clients must complete a handshake (``{op:
+        # "handshake", exe: "...", pid: N}``) before any JSON-RPC calls.
+        # The handshake is audit-only: it logs the client's claimed
+        # identity and verifies /proc/<pid>/exe, but a TOCTOU racer
+        # can defeat the check. Off by default.
+        "require_handshake": False,
     },
 }
 

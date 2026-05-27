@@ -19,7 +19,9 @@ import collections
 import hashlib
 import json
 import logging
+import math
 import os
+import signal
 import socket
 import stat
 import struct
@@ -175,6 +177,7 @@ def _hostname_match_any(host: str, patterns) -> bool:
 # respectively. Kept as module-level frozensets so tests can introspect.
 _SCREENSHOT_METHODS = frozenset({"screenshot"})
 _EVAL_METHODS = frozenset({"eval_js"})
+_OPEN_TAB_METHODS = frozenset({"open_tab"})
 
 
 class _RateBucket:
@@ -212,6 +215,19 @@ class _RateBucket:
             return False
         self._hits.append(now)
         return True
+
+    def retry_after(self, now: float, limit: int) -> float:
+        """Seconds until the next slot opens. Returns 0 if a slot is
+        available right now."""
+        if limit is None or limit <= 0:
+            return self._window
+        self._evict(now)
+        if len(self._hits) < limit:
+            return 0.0
+        # Oldest hit will expire at oldest + window.
+        oldest = self._hits[0]
+        wait = (oldest + self._window) - now
+        return max(0.0, wait)
 
     def __len__(self) -> int:
         return len(self._hits)
@@ -443,11 +459,17 @@ class _Client(QObject):
         self.pid = pid
         self.exe_path = exe_path
         self.exe_digest = exe_digest
+        # L6: handshake state. When ``require_handshake`` is True,
+        # the client must send a handshake message before any RPC.
+        self.handshake_done = False
+        self.handshake_exe: Optional[str] = None
+        self.handshake_pid: Optional[int] = None
         # L4: per-client sliding-window token buckets, reset on
         # disconnect by virtue of being instance attributes.
         self.bucket_total = _RateBucket()
         self.bucket_screenshot = _RateBucket()
         self.bucket_eval = _RateBucket()
+        self.bucket_open_tab = _RateBucket()
 
     @property
     def fd(self) -> int:
@@ -648,12 +670,27 @@ class _AgentServer(QObject):
         method = req.get("method")
         params = req.get("params") or {}
         rid = req.get("id")
+        # L6 handshake: if the message has ``"op": "handshake"`` it is
+        # a handshake frame, not a normal JSON-RPC call. Process it
+        # before any other gate so the client can identify itself.
+        if req.get("op") == "handshake":
+            return self._plugin._handle_handshake(client, req)
+        # If handshake is required but not yet done, reject the call.
+        if self._plugin._require_handshake() and not client.handshake_done:
+            log.warning(
+                "AGENT_RPC_DENY uid=%d fd=%d method=%s "
+                "reason=handshake_required",
+                os.getuid(), client.fd, method)
+            return _err(rid, -32007, "handshake_required")
         # Audit log every RPC before policy/dispatch so denied attempts
         # are also captured. Tag matches the logger name for
         # ``journalctl --user -t qdbrowser.agent_control``.
         log.info(
-            "AGENT_RPC uid=%d fd=%d method=%s params=%s",
-            os.getuid(), client.fd, method,
+            "AGENT_RPC uid=%d fd=%d pid=%s exe=%s method=%s params=%s",
+            os.getuid(), client.fd,
+            client.handshake_pid or client.pid,
+            client.handshake_exe or client.exe_path,
+            method,
             _redact_params(params) if isinstance(params, dict) else params)
         if not isinstance(params, dict):
             return _err(rid, -32602, "params must be an object")
@@ -676,13 +713,16 @@ class _AgentServer(QObject):
         # does *not* count against either bucket — same shape as
         # 03-agent-guardrails.md §L4 "Rate-limited requests don't count
         # against the quota."
-        rl_allowed, rl_reason = self._plugin._rate_check(client, method)
+        rl_allowed, rl_reason, rl_retry = self._plugin._rate_check(
+            client, method)
         if not rl_allowed:
             log.warning(
                 "AGENT_RPC_DENY uid=%d fd=%d method=%s reason=rate_limited "
-                "detail=%s",
-                os.getuid(), client.fd, method, rl_reason)
-            return _err(rid, -32005, f"rate_limited: {rl_reason}")
+                "detail=%s retry_after=%.1f",
+                os.getuid(), client.fd, method, rl_reason, rl_retry)
+            resp = _err(rid, -32005, f"rate_limited: {rl_reason}")
+            resp["error"]["retry_after"] = math.ceil(rl_retry)
+            return resp
         # L5: broker mediation. Sensitive methods (default-deny set +
         # admin-configured ``broker_mediated_methods``) get a synchronous
         # CheckAgentAction call.
@@ -757,6 +797,9 @@ class AgentControlPlugin(Plugin):
             app_controller.webview_removed.connect(self._on_webview_removed)
         except Exception:
             pass
+        # SIGHUP triggers a config reload so the admin can update
+        # policy without restarting the browser.
+        self._install_sighup_handler()
 
     # -- method registration -------------------------------------------
 
@@ -785,6 +828,85 @@ class AgentControlPlugin(Plugin):
         if method in self._methods:
             return self._methods[method]
         return getattr(self, f"rpc_{method}", None)
+
+    # -- SIGHUP config reload --------------------------------------------
+
+    _prev_sighup_handler = None
+
+    def _install_sighup_handler(self):
+        """Install a SIGHUP handler that reloads the config singleton.
+
+        Saves the previous handler so tests (and multiple plugins)
+        don't clobber each other. On Windows or when signal delivery
+        is impossible, this is a no-op.
+        """
+        try:
+            prev = signal.getsignal(signal.SIGHUP)
+        except (AttributeError, OSError):
+            # Windows or restricted env.
+            return
+        self.__class__._prev_sighup_handler = prev
+
+        def _on_sighup(signum, frame):
+            log.info("SIGHUP received — reloading agent_control policy")
+            try:
+                Config._instance = None
+                Config()  # re-reads config.toml
+            except Exception:
+                log.exception("config reload on SIGHUP failed")
+            # Invalidate the L6 exe cache so new entries take effect.
+            self._allowed_exes_cache = None
+            self._allowed_exes_signature = None
+            # Chain to previous handler if it was a callable.
+            if callable(prev) and prev not in (signal.SIG_DFL,
+                                                signal.SIG_IGN):
+                prev(signum, frame)
+
+        try:
+            signal.signal(signal.SIGHUP, _on_sighup)
+        except (OSError, ValueError):
+            pass
+
+    # -- Layer 6: handshake protocol ------------------------------------
+
+    def _require_handshake(self) -> bool:
+        """Return True if the admin requires a handshake before RPCs."""
+        try:
+            cfg = Config()
+            return bool(cfg.get("agent_control", "require_handshake",
+                                default=False))
+        except Exception:
+            return False
+
+    def _handle_handshake(self, client: "_Client", req: dict) -> dict:
+        """Process a ``{op: "handshake", exe: "...", pid: N}`` frame.
+
+        Verifies ``/proc/<pid>/exe`` against the claimed path (audit
+        only — see Layer 6 TOCTOU caveat in the spec). Logs the
+        identity for audit and records it on the client object.
+        """
+        claimed_exe = req.get("exe", "")
+        claimed_pid = req.get("pid")
+        rid = req.get("id")
+        if not isinstance(claimed_pid, int) or claimed_pid <= 0:
+            return _err(rid, -32602, "handshake: pid must be positive int")
+        actual_exe, actual_digest = _proc_exe_digest(claimed_pid)
+        match = (actual_exe is not None
+                 and os.path.realpath(claimed_exe) == os.path.realpath(actual_exe))
+        client.handshake_done = True
+        client.handshake_exe = claimed_exe
+        client.handshake_pid = claimed_pid
+        log.info(
+            "AGENT_RPC_HANDSHAKE uid=%d fd=%d claimed_exe=%s "
+            "claimed_pid=%d actual_exe=%s match=%s digest=%s",
+            os.getuid(), client.fd, claimed_exe, claimed_pid,
+            actual_exe, match,
+            (actual_digest[:16] + "...") if actual_digest else None)
+        return {"jsonrpc": "2.0", "id": rid, "result": {
+            "ok": True,
+            "verified": match,
+            "actual_exe": actual_exe,
+        }}
 
     # -- policy checks --------------------------------------------------
 
@@ -858,43 +980,53 @@ class AgentControlPlugin(Plugin):
 
     # -- Layer 4: rate limiting ----------------------------------------
 
-    def _rate_check(self, client: "_Client", method: str) -> tuple[bool, str]:
-        """Return ``(allowed, reason)`` for an RPC against this client's
-        token buckets. Does not mutate buckets on denial.
+    def _rate_check(self, client: "_Client", method: str
+                     ) -> tuple[bool, str, float]:
+        """Return ``(allowed, reason, retry_after)`` for an RPC against
+        this client's token buckets. Does not mutate buckets on denial.
 
-        Defaults track the §L4 spec: 120/min total, 10/min screenshot,
-        0/min eval (the latter so ``policy_enforced = true`` blocks
-        ``eval_js`` even if the admin re-enables it via
-        ``allowed_methods``). When config is unreadable, fail open —
-        rate limiting is hardening, not a security boundary; the policy
-        gate is.
+        Defaults track the §L4 spec: 600/min total (10 req/s),
+        5/min screenshot, 3/min eval, 10/min open_tab. When config is
+        unreadable, fail open — rate limiting is hardening, not a
+        security boundary; the policy gate is.
         """
         try:
             cfg = Config()
             total = int(cfg.get("agent_control", "rate_limit_per_minute",
-                                 default=120) or 0)
+                                 default=600) or 0)
             shot = int(cfg.get("agent_control",
                                 "screenshot_rate_limit_per_minute",
-                                default=10) or 0)
+                                default=5) or 0)
             ev = int(cfg.get("agent_control", "eval_rate_limit_per_minute",
-                              default=0) or 0)
+                              default=3) or 0)
+            ot = int(cfg.get("agent_control",
+                              "open_tab_rate_limit_per_minute",
+                              default=10) or 0)
         except Exception:
-            return True, ""
+            return True, "", 0.0
         now = time.monotonic()
         bucket_total = getattr(client, "bucket_total", None)
         bucket_shot = getattr(client, "bucket_screenshot", None)
         bucket_eval = getattr(client, "bucket_eval", None)
+        bucket_ot = getattr(client, "bucket_open_tab", None)
         if bucket_total is None:
-            return True, ""
+            return True, "", 0.0
         if method in _SCREENSHOT_METHODS and bucket_shot is not None:
             if not bucket_shot.allow(now, shot):
-                return False, f"screenshot {shot}/min"
+                retry = bucket_shot.retry_after(now, shot)
+                return False, f"screenshot {shot}/min", retry
         if method in _EVAL_METHODS and bucket_eval is not None:
             if not bucket_eval.allow(now, ev):
-                return False, f"eval_js {ev}/min"
+                retry = bucket_eval.retry_after(now, ev)
+                return False, f"eval_js {ev}/min", retry
+        if method in _OPEN_TAB_METHODS and bucket_ot is not None:
+            if not bucket_ot.allow(now, ot):
+                retry = bucket_ot.retry_after(now, ot)
+                return False, f"open_tab {ot}/min", retry
         if not bucket_total.allow(now, total):
-            return False, f"total {total}/min"
-        return True, ""
+            retry = bucket_total.retry_after(now, total)
+            return False, f"total {total}/min", retry
+        return True, "", 0.0
 
     # -- Layer 5: broker mediation -------------------------------------
 
