@@ -298,11 +298,9 @@ class DownloadsPanel(QWidget):
             self._list.takeItem(i)
 
     def _open_dir(self):
-        cfg = Config()
-        target = cfg.get(
+        target = Config().get(
             "downloads", "release_dir",
-            default=cfg.get("general", "downloads_dir",
-                            default=os.path.expanduser("~/Downloads")))
+            default=os.path.expanduser("~/Downloads"))
         _xdg_open(target)
 
     def _on_activated(self, item):
@@ -485,11 +483,9 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
 
     def _set_direct_download_dir(self, request: QWebEngineDownloadRequest):
         """Fallback: write directly to the user's downloads directory."""
-        cfg = Config()
-        target_dir = cfg.get(
+        target_dir = Config().get(
             "downloads", "release_dir",
-            default=cfg.get("general", "downloads_dir",
-                            default=os.path.expanduser("~/Downloads")))
+            default=os.path.expanduser("~/Downloads"))
         os.makedirs(target_dir, exist_ok=True)
         request.setDownloadDirectory(target_dir)
 

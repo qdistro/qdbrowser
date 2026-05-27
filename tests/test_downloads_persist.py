@@ -69,7 +69,7 @@ def test_panel_open_dir_uses_xdg_open_no_shell(window, monkeypatch,
     from qdbrowser.config import Config
     from qdbrowser.plugins.downloads import DownloadsPanel
     dangerous = "/tmp/qdbtest$(rm -rf $HOME)"
-    Config().set("general", "downloads_dir", dangerous)
+    Config().set("downloads", "release_dir", dangerous)
     called = {}
 
     class FakeProc:

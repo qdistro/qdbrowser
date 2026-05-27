@@ -103,8 +103,9 @@ class QuarantineStore:
         # earlier versions that used the default umask.
         try:
             os.chmod(self._dir, 0o700)
-        except OSError:
-            pass
+        except OSError as exc:
+            log.warning("cannot tighten quarantine dir permissions %s: %s",
+                        self._dir, exc)
         self._db_path = os.path.join(self._dir, "metadata.db")
         self._db = sqlite3.connect(self._db_path)
         self._db.row_factory = sqlite3.Row
