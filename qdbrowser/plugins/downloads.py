@@ -298,9 +298,11 @@ class DownloadsPanel(QWidget):
             self._list.takeItem(i)
 
     def _open_dir(self):
-        target = Config().get(
+        cfg = Config()
+        target = cfg.get(
             "downloads", "release_dir",
-            default=os.path.expanduser("~/Downloads"))
+            default=cfg.get("general", "downloads_dir",
+                            default=os.path.expanduser("~/Downloads")))
         _xdg_open(target)
 
     def _on_activated(self, item):
@@ -453,7 +455,7 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
                 # orphan DB rows for files that will never arrive.
                 if row_id is not None:
                     try:
-                        qs.update_scan_result(row_id, "error")
+                        qs.update_scan_result(row_id, "intake_failed")
                     except Exception:
                         pass
                     row_id = None  # mark as not quarantined
@@ -482,10 +484,16 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
         self._notify_bridge_started(request)
 
     def _set_direct_download_dir(self, request: QWebEngineDownloadRequest):
-        """Fallback: write directly to the user's downloads directory."""
-        target_dir = Config().get(
+        """Fallback: write directly to the user's downloads directory.
+
+        Prefers ``[downloads] release_dir``, falls back to the legacy
+        ``[general] downloads_dir`` so existing user configs are honoured.
+        """
+        cfg = Config()
+        target_dir = cfg.get(
             "downloads", "release_dir",
-            default=os.path.expanduser("~/Downloads"))
+            default=cfg.get("general", "downloads_dir",
+                            default=os.path.expanduser("~/Downloads")))
         os.makedirs(target_dir, exist_ok=True)
         request.setDownloadDirectory(target_dir)
 

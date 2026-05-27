@@ -217,11 +217,13 @@ class QuarantineStore:
 
     def list_pending(self) -> list:
         """Return unreleased downloads, excluding failed-intake rows
-        (scan_result='error') which represent files that never arrived.
+        (scan_result='intake_failed') which represent files that never
+        arrived.  Scanner errors ('error') are still shown since those
+        files exist on disk and may be releasable.
         """
         return [dict(r) for r in self._db.execute(
             "SELECT * FROM downloads WHERE released=0 "
-            "AND COALESCE(scan_result, '') != 'error' "
+            "AND COALESCE(scan_result, '') != 'intake_failed' "
             "ORDER BY fetched_at DESC").fetchall()]
 
     def list_all(self, limit: int = 200) -> list:
