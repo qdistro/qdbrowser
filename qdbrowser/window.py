@@ -103,6 +103,11 @@ class MainWindow(QMainWindow):
         self._install_side_panels()
         self._wire_pending_agent_contribs()
 
+        # Security modules — wired after plugins so every existing
+        # WebView and every future one gets the interceptor, and cert
+        # pinning is installed on every profile.
+        self._apply_security_modules()
+
     # -- construction ---------------------------------------------------
 
     def _build_tabs(self):
@@ -244,6 +249,44 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 log.exception("plugin %s contribute_agent_methods failed: %s",
                               type(plug).__name__, exc)
+
+    def _apply_security_modules(self):
+        """Wire security interceptor and certificate pinning.
+
+        Called once at the end of ``__init__``. Both modules are
+        fault-tolerant: if pin files don't exist or the profile lacks a
+        ``certificateError`` signal the browser still starts.
+        """
+        # 1. Security interceptor (HTTPS-only, DNT, UA validation).
+        try:
+            from qdbrowser.security_interceptor import apply_security_policy
+            self._security_interceptor = apply_security_policy(self)
+        except Exception as exc:
+            log.exception("security interceptor failed: %s", exc)
+
+        # 2. Certificate pinning — install on every profile that exists
+        #    now and subscribe to future profile creations.
+        try:
+            from qdbrowser.cert_policy import load_pin_store, install_cert_policy
+            from qdbrowser import webview as wv_mod
+            sec = self._config.get("security", default={}) or {}
+            pin_store = load_pin_store(
+                system_path=sec.get("cert_pins_path"),
+                user_path=sec.get("cert_pins_user_path"),
+                overrides_path=sec.get("cert_overrides_path"),
+            )
+            self._pin_store = pin_store
+
+            def _wire_cert_policy(profile, _store=pin_store):
+                try:
+                    install_cert_policy(profile, _store)
+                except Exception as exc:
+                    log.warning("cert policy install failed on profile: %s", exc)
+
+            wv_mod.on_profile_created(_wire_cert_policy)
+            self._cert_policy_listener = _wire_cert_policy
+        except Exception as exc:
+            log.exception("cert pinning setup failed: %s", exc)
 
     def _install_side_panels(self):
         for provider in self.plugins.get_side_panel_providers():
