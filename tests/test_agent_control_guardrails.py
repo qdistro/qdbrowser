@@ -804,8 +804,8 @@ def test_handshake_mismatched_exe(fresh_config):
     resp = server.handle(client, req)
     assert "result" in resp
     assert resp["result"]["verified"] is False
-    # Handshake still completes (audit-only).
-    assert client.handshake_done is True
+    # Failed verification does not grant handshake_done.
+    assert client.handshake_done is False
 
 
 def test_handshake_logged(fresh_config, caplog):
@@ -861,8 +861,9 @@ def test_require_handshake_allows_after_handshake(fresh_config):
     plug = AgentControlPlugin()
     server = _AgentServer(plug, window=None)
     client = _StubClient()
-    # Handshake first.
-    hs = {"op": "handshake", "exe": "/usr/bin/test", "pid": os.getpid(),
+    # Handshake first — use the actual exe so verification succeeds.
+    actual_exe = os.readlink(f"/proc/{os.getpid()}/exe")
+    hs = {"op": "handshake", "exe": actual_exe, "pid": os.getpid(),
           "id": 0}
     server.handle(client, hs)
     assert client.handshake_done is True
@@ -926,7 +927,7 @@ def test_sighup_reloads_config(fresh_config, monkeypatch):
     # config file that has policy_enforced=false.
     Config().set("agent_control", "policy_enforced", False)
 
-    # Send SIGHUP to ourselves.
+    # Send SIGHUP to ourselves — sets the pending flag.
     try:
         handler = sig.getsignal(sig.SIGHUP)
         if callable(handler):
@@ -934,7 +935,10 @@ def test_sighup_reloads_config(fresh_config, monkeypatch):
     except (AttributeError, OSError):
         pytest.skip("SIGHUP not available on this platform")
 
-    # After SIGHUP, the config singleton was reset. Re-reading
+    # The handler only sets a flag; process it explicitly.
+    plug._check_sighup_pending()
+
+    # After processing, the config singleton was reset. Re-reading
     # should pick up defaults (policy_enforced=False).
     cfg = Config()
     enforced = cfg.get("agent_control", "policy_enforced", default=False)

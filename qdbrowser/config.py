@@ -212,7 +212,7 @@ DEFAULTS = {
         # 3 eval_js/min, 10 open_tab/min.
         "rate_limit_per_minute": 600,
         "screenshot_rate_limit_per_minute": 5,
-        "eval_rate_limit_per_minute": 3,
+        "eval_rate_limit_per_minute": 0,
         "open_tab_rate_limit_per_minute": 10,
         # ---- Layer 5: broker mediation ----
         # When enabled, calls to ``_DEFAULT_DENIED_METHODS`` (or any

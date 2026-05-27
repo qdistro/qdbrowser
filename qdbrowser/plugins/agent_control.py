@@ -202,13 +202,24 @@ class _RateBucket:
         while self._hits and self._hits[0] <= cutoff:
             self._hits.popleft()
 
+    def would_allow(self, now: float, limit: int) -> bool:
+        """Check whether the bucket would allow without recording."""
+        if limit is None:
+            return True
+        if limit <= 0:
+            return False
+        self._evict(now)
+        return len(self._hits) < limit
+
+    def record(self, now: float) -> None:
+        """Record a hit (call after all buckets pass)."""
+        self._hits.append(now)
+
     def allow(self, now: float, limit: int) -> bool:
         if limit is None:
-            # Uncapped — record and allow.
             self._hits.append(now)
             return True
         if limit <= 0:
-            # Disabled category: always deny without recording.
             return False
         self._evict(now)
         if len(self._hits) >= limit:
@@ -510,6 +521,10 @@ class _Client(QObject):
                 continue
             if not isinstance(req, dict):
                 self.send_obj(_err(None, -32600, "request must be object"))
+                continue
+            if req.get("op") == "handshake":
+                resp = self._server.handle(self, req)
+                self.send_obj(resp)
                 continue
             method = req.get("method")
             if not isinstance(method, str):
@@ -832,32 +847,22 @@ class AgentControlPlugin(Plugin):
     # -- SIGHUP config reload --------------------------------------------
 
     _prev_sighup_handler = None
+    _sighup_pending = False
 
     def _install_sighup_handler(self):
-        """Install a SIGHUP handler that reloads the config singleton.
-
-        Saves the previous handler so tests (and multiple plugins)
-        don't clobber each other. On Windows or when signal delivery
-        is impossible, this is a no-op.
+        """Install a SIGHUP handler that defers config reload to the
+        event loop (async-signal-safe). The handler only sets a flag;
+        actual I/O happens on the next QTimer tick.
         """
         try:
             prev = signal.getsignal(signal.SIGHUP)
         except (AttributeError, OSError):
-            # Windows or restricted env.
             return
-        self.__class__._prev_sighup_handler = prev
+        self._prev_sighup_handler = prev
+        plugin_ref = self
 
         def _on_sighup(signum, frame):
-            log.info("SIGHUP received — reloading agent_control policy")
-            try:
-                Config._instance = None
-                Config()  # re-reads config.toml
-            except Exception:
-                log.exception("config reload on SIGHUP failed")
-            # Invalidate the L6 exe cache so new entries take effect.
-            self._allowed_exes_cache = None
-            self._allowed_exes_signature = None
-            # Chain to previous handler if it was a callable.
+            plugin_ref.__class__._sighup_pending = True
             if callable(prev) and prev not in (signal.SIG_DFL,
                                                 signal.SIG_IGN):
                 prev(signum, frame)
@@ -866,6 +871,28 @@ class AgentControlPlugin(Plugin):
             signal.signal(signal.SIGHUP, _on_sighup)
         except (OSError, ValueError):
             pass
+
+        try:
+            from PyQt6.QtCore import QTimer
+            self._sighup_timer = QTimer()
+            self._sighup_timer.setInterval(500)
+            self._sighup_timer.timeout.connect(self._check_sighup_pending)
+            self._sighup_timer.start()
+        except Exception:
+            pass
+
+    def _check_sighup_pending(self):
+        if not self.__class__._sighup_pending:
+            return
+        self.__class__._sighup_pending = False
+        log.info("SIGHUP received — reloading agent_control policy")
+        try:
+            Config._instance = None
+            Config()
+        except Exception:
+            log.exception("config reload on SIGHUP failed")
+        self._allowed_exes_cache = None
+        self._allowed_exes_signature = None
 
     # -- Layer 6: handshake protocol ------------------------------------
 
@@ -888,12 +915,14 @@ class AgentControlPlugin(Plugin):
         claimed_exe = req.get("exe", "")
         claimed_pid = req.get("pid")
         rid = req.get("id")
+        if not isinstance(claimed_exe, str):
+            return _err(rid, -32602, "handshake: exe must be a string")
         if not isinstance(claimed_pid, int) or claimed_pid <= 0:
             return _err(rid, -32602, "handshake: pid must be positive int")
         actual_exe, actual_digest = _proc_exe_digest(claimed_pid)
         match = (actual_exe is not None
                  and os.path.realpath(claimed_exe) == os.path.realpath(actual_exe))
-        client.handshake_done = True
+        client.handshake_done = match
         client.handshake_exe = claimed_exe
         client.handshake_pid = claimed_pid
         log.info(
@@ -1011,21 +1040,21 @@ class AgentControlPlugin(Plugin):
         bucket_ot = getattr(client, "bucket_open_tab", None)
         if bucket_total is None:
             return True, "", 0.0
+        # Two-phase: check all buckets first, record only on success.
+        checks: list[tuple[_RateBucket, int, str]] = []
+        checks.append((bucket_total, total, f"total {total}/min"))
         if method in _SCREENSHOT_METHODS and bucket_shot is not None:
-            if not bucket_shot.allow(now, shot):
-                retry = bucket_shot.retry_after(now, shot)
-                return False, f"screenshot {shot}/min", retry
+            checks.append((bucket_shot, shot, f"screenshot {shot}/min"))
         if method in _EVAL_METHODS and bucket_eval is not None:
-            if not bucket_eval.allow(now, ev):
-                retry = bucket_eval.retry_after(now, ev)
-                return False, f"eval_js {ev}/min", retry
+            checks.append((bucket_eval, ev, f"eval_js {ev}/min"))
         if method in _OPEN_TAB_METHODS and bucket_ot is not None:
-            if not bucket_ot.allow(now, ot):
-                retry = bucket_ot.retry_after(now, ot)
-                return False, f"open_tab {ot}/min", retry
-        if not bucket_total.allow(now, total):
-            retry = bucket_total.retry_after(now, total)
-            return False, f"total {total}/min", retry
+            checks.append((bucket_ot, ot, f"open_tab {ot}/min"))
+        for bucket, limit, reason in checks:
+            if not bucket.would_allow(now, limit):
+                retry = bucket.retry_after(now, limit)
+                return False, reason, retry
+        for bucket, _limit, _reason in checks:
+            bucket.record(now)
         return True, "", 0.0
 
     # -- Layer 5: broker mediation -------------------------------------
@@ -1276,6 +1305,10 @@ class AgentControlPlugin(Plugin):
                      profile: str = "default"):
         if not self._window:
             raise _RpcError(-32003, "no window")
+        if url is not None:
+            allowed, reason = self._policy_check_url(url)
+            if not allowed:
+                raise _RpcError(-32002, f"policy_denied: {reason}")
         wv = self._window.new_tab(url=url, profile_name=profile,
                                   background=background)
         return {"id": wv.stable_id}
