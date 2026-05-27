@@ -209,8 +209,12 @@ class QuarantineStore:
     # -- queries ------------------------------------------------------
 
     def list_pending(self) -> list:
+        """Return unreleased downloads, excluding failed-intake rows
+        (scan_result='error') which represent files that never arrived.
+        """
         return [dict(r) for r in self._db.execute(
             "SELECT * FROM downloads WHERE released=0 "
+            "AND COALESCE(scan_result, '') != 'error' "
             "ORDER BY fetched_at DESC").fetchall()]
 
     def list_all(self, limit: int = 200) -> list:
@@ -316,7 +320,11 @@ def release(store: QuarantineStore,
         return None
     src = row["quarantine_path"]
     os.makedirs(release_dir, exist_ok=True)
-    dst = os.path.join(release_dir, row["filename"])
+    # Defence-in-depth: re-sanitize the stored filename so legacy or
+    # manually-inserted rows cannot escape release_dir via path
+    # traversal (e.g. "../../../etc/cron.d/evil").
+    safe_filename = _sanitize_name(row["filename"])
+    dst = os.path.join(release_dir, safe_filename)
     # Avoid clobber in the release dir.
     base, ext = os.path.splitext(dst)
     n = 1
