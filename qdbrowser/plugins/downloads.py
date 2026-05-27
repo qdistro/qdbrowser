@@ -298,9 +298,11 @@ class DownloadsPanel(QWidget):
             self._list.takeItem(i)
 
     def _open_dir(self):
-        target = Config().get(
-            "general", "downloads_dir",
-            default=os.path.expanduser("~/Downloads"))
+        cfg = Config()
+        target = cfg.get(
+            "downloads", "release_dir",
+            default=cfg.get("general", "downloads_dir",
+                            default=os.path.expanduser("~/Downloads")))
         _xdg_open(target)
 
     def _on_activated(self, item):

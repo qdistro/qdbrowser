@@ -99,6 +99,12 @@ class QuarantineStore:
     def __init__(self, quarantine_dir: str):
         self._dir = os.path.expanduser(quarantine_dir)
         os.makedirs(self._dir, mode=0o700, exist_ok=True)
+        # Tighten permissions on pre-existing directories created by
+        # earlier versions that used the default umask.
+        try:
+            os.chmod(self._dir, 0o700)
+        except OSError:
+            pass
         self._db_path = os.path.join(self._dir, "metadata.db")
         self._db = sqlite3.connect(self._db_path)
         self._db.row_factory = sqlite3.Row
