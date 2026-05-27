@@ -541,10 +541,23 @@ class AutofillOrchestrator:
                 None)
         if chosen is None:
             chosen = credentials[0]
+        selected_username = str(chosen.get("username", ""))
+        confirm_token = mint_intent_token(
+            self._session_secret, "pwd.fill_confirm")
+        confirm_args = {
+            "url": url,
+            "username": selected_username,
+            "intent_token": confirm_token.to_dict(),
+        }
+        confirm_reply = self.bridge.call("pwd.fill_confirm", confirm_args)
+        if not confirm_reply.get("ok"):
+            return FillResult(ok=False,
+                              error=confirm_reply.get("error", "confirm_error"))
+        confirmed = (confirm_reply.get("credentials") or [{}])[0]
         return FillResult(
             ok=True,
-            username=str(chosen.get("username", "")),
-            password=str(chosen.get("password", "")),
+            username=selected_username,
+            password=str(confirmed.get("password", "")),
         )
 
     def fill(self, url: str, *, username: Optional[str] = None,

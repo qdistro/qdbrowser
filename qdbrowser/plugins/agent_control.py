@@ -919,6 +919,13 @@ class AgentControlPlugin(Plugin):
             return _err(rid, -32602, "handshake: exe must be a string")
         if not isinstance(claimed_pid, int) or claimed_pid <= 0:
             return _err(rid, -32602, "handshake: pid must be positive int")
+        if client.pid is not None and claimed_pid != client.pid:
+            log.warning(
+                "AGENT_RPC_HANDSHAKE uid=%d fd=%d claimed_pid=%d "
+                "peer_pid=%d — pid mismatch, rejecting",
+                os.getuid(), client.fd, claimed_pid, client.pid)
+            return _err(rid, -32602,
+                        "handshake: pid does not match peer credentials")
         actual_exe, actual_digest = _proc_exe_digest(claimed_pid)
         match = (actual_exe is not None
                  and os.path.realpath(claimed_exe) == os.path.realpath(actual_exe))
