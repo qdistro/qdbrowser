@@ -51,7 +51,7 @@ from PyQt6.QtWebEngineCore import QWebEngineDownloadRequest, QWebEngineProfile
 from qdbrowser.config import Config, CONFIG_DIR
 from qdbrowser.plugin import SidePanelProvider, CommandProvider
 from qdbrowser import webview as wv_mod
-from qdbrowser.quarantine import QuarantineStore
+from qdbrowser.quarantine import QuarantineStore, _sanitize_name
 
 
 HISTORY_PATH = os.path.join(CONFIG_DIR, "downloads.json")
@@ -79,12 +79,14 @@ class _DownloadItem(QWidget):
 
     cancelled = pyqtSignal(object)  # self
 
-    def __init__(self, request: QWebEngineDownloadRequest, parent=None):
+    def __init__(self, request: QWebEngineDownloadRequest,
+                 quarantined: bool = False, parent=None):
         super().__init__(parent)
         self._request = request
         self._path = os.path.join(request.downloadDirectory(),
                                    request.downloadFileName())
         self._finished = False
+        self._quarantined = quarantined
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 2, 4, 2)
@@ -170,14 +172,22 @@ class _DownloadItem(QWidget):
         self._bar.setRange(0, 100)
         self._bar.setValue(100)
         self._pause_btn.setEnabled(False)
-        self._cancel_btn.setText("📂")
-        try:
-            self._cancel_btn.clicked.disconnect()
-        except (RuntimeError, TypeError):
-            pass
-        self._cancel_btn.clicked.connect(self._open_path)
-        self._cancel_btn.setToolTip("Open file")
-        self._name.setText(f"✓  {os.path.basename(self._path)}")
+        if self._quarantined:
+            # File is in quarantine — don't expose a direct-open button
+            # that would bypass the polkit-gated release flow.
+            self._cancel_btn.setEnabled(False)
+            self._cancel_btn.setToolTip("Quarantined — release to open")
+            self._name.setText(
+                f"🔒  {os.path.basename(self._path)}  (quarantined)")
+        else:
+            self._cancel_btn.setText("📂")
+            try:
+                self._cancel_btn.clicked.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            self._cancel_btn.clicked.connect(self._open_path)
+            self._cancel_btn.setToolTip("Open file")
+            self._name.setText(f"✓  {os.path.basename(self._path)}")
 
     def _toggle_pause(self):
         if self._request.isPaused():
@@ -240,8 +250,9 @@ class DownloadsPanel(QWidget):
         # Open-on-double-click for historical rows.
         self._list.itemActivated.connect(self._on_activated)
 
-    def add_active(self, request: QWebEngineDownloadRequest):
-        widget = _DownloadItem(request)
+    def add_active(self, request: QWebEngineDownloadRequest,
+                   quarantined: bool = False):
+        widget = _DownloadItem(request, quarantined=quarantined)
         item = QListWidgetItem()
         item.setSizeHint(widget.sizeHint())
         item.setData(Qt.ItemDataRole.UserRole,
@@ -363,10 +374,36 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
 
     def _on_download_requested(self, request: QWebEngineDownloadRequest):
         qs = self._quarantine
+
+        row_id = None  # set if quarantine intake succeeds
+
+        # Check auto_release_domains: if the download URL's host is in
+        # the allowlist, skip quarantine entirely for this request.
+        if qs is not None:
+            try:
+                cfg = Config()
+                auto_domains = cfg.get(
+                    "downloads", "auto_release_domains", default=[]) or []
+                if auto_domains:
+                    host = request.url().host() if hasattr(request, "url") else ""
+                    if host and host in auto_domains:
+                        log.info("auto-release domain %r, skipping quarantine",
+                                 host)
+                        qs = None
+            except Exception:
+                pass
+
         if qs is not None:
             # Quarantine path: redirect into the quarantine directory.
+            row_id = None
+            q_path = None
+            suggested = None
             try:
                 suggested = request.downloadFileName()
+                # Use sanitized basename for the DB record so release()
+                # cannot escape the release directory via a path-like
+                # server-suggested filename.
+                safe_name = _sanitize_name(suggested)
                 q_path = qs.plan_path(suggested)
                 request.setDownloadDirectory(os.path.dirname(q_path))
                 request.setDownloadFileName(os.path.basename(q_path))
@@ -386,7 +423,7 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
 
                 row_id = qs.record(
                     quarantine_path=q_path,
-                    filename=suggested,
+                    filename=safe_name,
                     source_url=source_url,
                     content_type=content_type,
                     profile_name=profile_name,
@@ -396,7 +433,7 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
                 try:
                     qs.write_sidecar(row_id, q_path, {
                         "source_url": source_url,
-                        "filename": suggested,
+                        "filename": safe_name,
                         "profile": profile_name,
                         "content_type": content_type,
                         "fetched_at": int(time.time()),
@@ -412,12 +449,31 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
             except Exception as exc:
                 log.warning("quarantine redirect failed, falling back to "
                             "direct download: %s", exc)
+                # Clean up partial quarantine state so we don't leave
+                # orphan DB rows for files that will never arrive.
+                if row_id is not None:
+                    try:
+                        qs.update_scan_result(row_id, "error")
+                    except Exception:
+                        pass
+                    row_id = None  # mark as not quarantined
+                # Reset the download filename in case setDownloadFileName
+                # was already called with the quarantine basename.
+                try:
+                    if suggested:
+                        request.setDownloadFileName(suggested)
+                except Exception:
+                    pass
                 self._set_direct_download_dir(request)
         else:
             self._set_direct_download_dir(request)
 
+        # Track whether this request ended up in quarantine so the UI
+        # knows not to offer a direct-open button.
+        is_quarantined = qs is not None and row_id is not None
+
         if self._panel:
-            self._panel.add_active(request)
+            self._panel.add_active(request, quarantined=is_quarantined)
         request.accept()
         # Notify bridge_adapter (if loaded and active) so it can fan
         # the event out over D-Bus to qdistro daemons. We look it up
