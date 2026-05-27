@@ -553,7 +553,13 @@ class AutofillOrchestrator:
         if not confirm_reply.get("ok"):
             return FillResult(ok=False,
                               error=confirm_reply.get("error", "confirm_error"))
-        confirmed = (confirm_reply.get("credentials") or [{}])[0]
+        confirmed_creds = confirm_reply.get("credentials") or []
+        if not confirmed_creds:
+            return FillResult(ok=False, error="no_match")
+        confirmed = confirmed_creds[0]
+        confirmed_username = str(confirmed.get("username", ""))
+        if confirmed_username and confirmed_username != selected_username:
+            return FillResult(ok=False, error="bad_confirm_username")
         return FillResult(
             ok=True,
             username=selected_username,

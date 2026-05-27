@@ -159,10 +159,16 @@ class TestOrchestratorFill:
         assert prompt.prompted[0].candidate_usernames == ("alice",)
 
     def test_admin_allow_default_username(self):
-        bridge = _FakeBridge.with_answers({"pwd.fill": {
-            "ok": True,
-            "credentials": [{"username": "alice", "password": "s3cret"}],
-        }})
+        bridge = _FakeBridge.with_answers({
+            "pwd.fill": {
+                "ok": True,
+                "credentials": [{"username": "alice"}],
+            },
+            "pwd.fill_confirm": {
+                "ok": True,
+                "credentials": [{"username": "alice", "password": "s3cret"}],
+            },
+        })
         prompt = _FakePrompt.with_decision(allow=True)
         o = pa.AutofillOrchestrator(bridge=bridge, prompt=prompt,
                                      silo="work")
@@ -174,13 +180,19 @@ class TestOrchestratorFill:
         assert prompt.prompted[0].silo == "work"
 
     def test_admin_allow_with_selected_username(self):
-        bridge = _FakeBridge.with_answers({"pwd.fill": {
-            "ok": True,
-            "credentials": [
-                {"username": "alice", "password": "s1"},
-                {"username": "bob", "password": "s2"},
-            ],
-        }})
+        bridge = _FakeBridge.with_answers({
+            "pwd.fill": {
+                "ok": True,
+                "credentials": [
+                    {"username": "alice"},
+                    {"username": "bob"},
+                ],
+            },
+            "pwd.fill_confirm": {
+                "ok": True,
+                "credentials": [{"username": "bob", "password": "s2"}],
+            },
+        })
         prompt = _FakePrompt.with_decision(allow=True, username="bob")
         o = pa.AutofillOrchestrator(bridge=bridge, prompt=prompt)
         o.set_session_secret(SECRET_HEX)
@@ -190,15 +202,21 @@ class TestOrchestratorFill:
         assert r.password == "s2"
 
     def test_intent_token_in_bridge_call(self):
-        bridge = _FakeBridge.with_answers({"pwd.fill": {
-            "ok": True,
-            "credentials": [{"username": "alice", "password": "s"}],
-        }})
+        bridge = _FakeBridge.with_answers({
+            "pwd.fill": {
+                "ok": True,
+                "credentials": [{"username": "alice"}],
+            },
+            "pwd.fill_confirm": {
+                "ok": True,
+                "credentials": [{"username": "alice", "password": "s"}],
+            },
+        })
         prompt = _FakePrompt.with_decision(allow=True)
         o = pa.AutofillOrchestrator(bridge=bridge, prompt=prompt)
         o.set_session_secret(SECRET_HEX)
         o.fill("https://example.com/")
-        assert len(bridge.calls) == 1
+        assert len(bridge.calls) == 2
         op, args = bridge.calls[0]
         assert op == "pwd.fill"
         assert args["url"] == "https://example.com/"
@@ -210,6 +228,10 @@ class TestOrchestratorFill:
                      f"{token['op']}").encode("utf-8")
         expected = hmac.new(secret, canonical, hashlib.sha256).hexdigest()
         assert token["hmac"] == expected
+        confirm_op, confirm_args = bridge.calls[1]
+        assert confirm_op == "pwd.fill_confirm"
+        assert confirm_args["username"] == "alice"
+        assert confirm_args["intent_token"]["op"] == "pwd.fill_confirm"
 
 
 class TestFillResult:
@@ -296,10 +318,14 @@ class TestHandshakeRefreshOnBadHmac:
                 return {"ok": False, "error": "intent_token_bad_hmac"}
             return {"ok": True,
                     "credentials": [
-                        {"username": "alice", "password": "s3cret"}]}
+                        {"username": "alice"}]}
 
         bridge = _FakeBridge.with_answers({
             "pwd.fill": fill_reply,
+            "pwd.fill_confirm": {
+                "ok": True,
+                "credentials": [{"username": "alice", "password": "s3cret"}],
+            },
             "qdistro.handshake": {"ok": True,
                                   "session_secret_hex":
                                   ("11" * 32)},
