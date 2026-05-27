@@ -483,9 +483,11 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
 
     def _set_direct_download_dir(self, request: QWebEngineDownloadRequest):
         """Fallback: write directly to the user's downloads directory."""
-        target_dir = Config().get(
-            "general", "downloads_dir",
-            default=os.path.expanduser("~/Downloads"))
+        cfg = Config()
+        target_dir = cfg.get(
+            "downloads", "release_dir",
+            default=cfg.get("general", "downloads_dir",
+                            default=os.path.expanduser("~/Downloads")))
         os.makedirs(target_dir, exist_ok=True)
         request.setDownloadDirectory(target_dir)
 

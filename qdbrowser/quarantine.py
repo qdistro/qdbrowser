@@ -98,12 +98,18 @@ class QuarantineStore:
 
     def __init__(self, quarantine_dir: str):
         self._dir = os.path.expanduser(quarantine_dir)
-        os.makedirs(self._dir, exist_ok=True)
+        os.makedirs(self._dir, mode=0o700, exist_ok=True)
         self._db_path = os.path.join(self._dir, "metadata.db")
         self._db = sqlite3.connect(self._db_path)
         self._db.row_factory = sqlite3.Row
         self._db.executescript(_SCHEMA)
         self._db.commit()
+        # Restrict DB file permissions — quarantine metadata includes
+        # source URLs and file hashes, treat as private.
+        try:
+            os.chmod(self._db_path, 0o600)
+        except OSError:
+            pass
 
     @property
     def directory(self) -> str:
@@ -165,8 +171,16 @@ class QuarantineStore:
     def write_sidecar(self, row_id: int, quarantine_path: str,
                       payload: dict) -> str:
         sidecar = quarantine_path + ".qdistro-meta.json"
-        with open(sidecar, "w") as f:
-            json.dump(payload, f, indent=2, sort_keys=True)
+        fd = os.open(sidecar, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(payload, f, indent=2, sort_keys=True)
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
         return sidecar
 
     def update_after_finish(self, row_id: int, sha256: str,

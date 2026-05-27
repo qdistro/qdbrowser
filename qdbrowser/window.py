@@ -432,6 +432,12 @@ class MainWindow(QMainWindow):
         # URL interceptors
         for interc in self.plugins.get_url_interceptors():
             wv.add_interceptor(interc)
+        # Security interceptor — also installed via webview_added, but
+        # we attach eagerly here so the interceptor is in place before
+        # Qt processes the queued navigation from WebView.__init__.
+        si = getattr(self, "_security_interceptor", None)
+        if si is not None:
+            wv.add_interceptor(si)
 
     def _find_tab_for_webview(self, wv):
         for i in range(self._tabs.count()):
