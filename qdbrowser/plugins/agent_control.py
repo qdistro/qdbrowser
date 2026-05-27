@@ -847,22 +847,30 @@ class AgentControlPlugin(Plugin):
     # -- SIGHUP config reload --------------------------------------------
 
     _prev_sighup_handler = None
-    _sighup_pending = False
+    _sighup_pipe_r = -1
+    _sighup_pipe_w = -1
 
     def _install_sighup_handler(self):
         """Install a SIGHUP handler that defers config reload to the
-        event loop (async-signal-safe). The handler only sets a flag;
-        actual I/O happens on the next QTimer tick.
+        event loop via a self-pipe (async-signal-safe).
         """
         try:
             prev = signal.getsignal(signal.SIGHUP)
         except (AttributeError, OSError):
             return
         self._prev_sighup_handler = prev
-        plugin_ref = self
+
+        r, w = os.pipe()
+        os.set_blocking(w, False)
+        os.set_blocking(r, False)
+        self.__class__._sighup_pipe_r = r
+        self.__class__._sighup_pipe_w = w
 
         def _on_sighup(signum, frame):
-            plugin_ref.__class__._sighup_pending = True
+            try:
+                os.write(w, b'\x00')
+            except OSError:
+                pass
             if callable(prev) and prev not in (signal.SIG_DFL,
                                                 signal.SIG_IGN):
                 prev(signum, frame)
@@ -873,18 +881,20 @@ class AgentControlPlugin(Plugin):
             pass
 
         try:
-            from PyQt6.QtCore import QTimer
-            self._sighup_timer = QTimer()
-            self._sighup_timer.setInterval(500)
-            self._sighup_timer.timeout.connect(self._check_sighup_pending)
-            self._sighup_timer.start()
+            from PyQt6.QtCore import QSocketNotifier
+            self._sighup_notifier = QSocketNotifier(
+                r, QSocketNotifier.Type.Read)
+            self._sighup_notifier.activated.connect(
+                self._check_sighup_pending)
+            self._sighup_notifier.setEnabled(True)
         except Exception:
             pass
 
     def _check_sighup_pending(self):
-        if not self.__class__._sighup_pending:
-            return
-        self.__class__._sighup_pending = False
+        try:
+            os.read(self.__class__._sighup_pipe_r, 256)
+        except OSError:
+            pass
         log.info("SIGHUP received — reloading agent_control policy")
         try:
             Config._instance = None
@@ -938,11 +948,10 @@ class AgentControlPlugin(Plugin):
             os.getuid(), client.fd, claimed_exe, claimed_pid,
             actual_exe, match,
             (actual_digest[:16] + "...") if actual_digest else None)
-        return {"jsonrpc": "2.0", "id": rid, "result": {
-            "ok": True,
-            "verified": match,
-            "actual_exe": actual_exe,
-        }}
+        result = {"ok": True, "verified": match}
+        if match:
+            result["actual_exe"] = actual_exe
+        return {"jsonrpc": "2.0", "id": rid, "result": result}
 
     # -- policy checks --------------------------------------------------
 

@@ -513,6 +513,7 @@ class AutofillOrchestrator:
                 return FillResult(ok=False, error="vault_locked")
             return FillResult(ok=False, error=err)
         credentials = reply.get("credentials") or []
+        fill_token = reply.get("fill_token") or ""
         if not credentials:
             return FillResult(ok=False, error="no_match")
         candidate_usernames = tuple(
@@ -547,6 +548,7 @@ class AutofillOrchestrator:
         confirm_args = {
             "url": url,
             "username": selected_username,
+            "fill_token": fill_token,
             "intent_token": confirm_token.to_dict(),
         }
         confirm_reply = self.bridge.call("pwd.fill_confirm", confirm_args)
@@ -558,7 +560,7 @@ class AutofillOrchestrator:
             return FillResult(ok=False, error="no_match")
         confirmed = confirmed_creds[0]
         confirmed_username = str(confirmed.get("username", ""))
-        if confirmed_username and confirmed_username != selected_username:
+        if confirmed_username != selected_username:
             return FillResult(ok=False, error="bad_confirm_username")
         return FillResult(
             ok=True,
