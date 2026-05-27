@@ -170,6 +170,9 @@ DEFAULTS = {
         "cert_overrides_path": "/etc/qdistro/cert-overrides.json",
     },
     "downloads": {
+        # Master switch: when true every download lands in quarantine
+        # first; when false files go straight to ``release_dir``.
+        "quarantine_enabled": True,
         # Quarantine: every download lands in
         # ``~/.local/share/qdbrowser/quarantine/`` with a sibling
         # ``.qdistro-meta.json`` and an entry in ``metadata.db``.
@@ -180,6 +183,10 @@ DEFAULTS = {
         "scan_command": "",
         # Target dir for release-from-quarantine.
         "release_dir": os.path.expanduser("~/Downloads"),
+        # Domains whose downloads bypass quarantine entirely.  Each
+        # entry is matched against the download URL's host (exact
+        # match, no globbing).  Empty list = no auto-release.
+        "auto_release_domains": [],
     },
     "agent_control": {
         # Master switch for method-allowlist enforcement. Off by default

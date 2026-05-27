@@ -100,6 +100,21 @@
     <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
   </action>
 
+  <!-- Releasing a quarantined download moves the file out of the
+       sandbox into ~/Downloads. Retained for the active session so
+       batch-releasing several files doesn't re-prompt each time. -->
+  <action id="org.qdistro.qdbrowser.downloads.release">
+    <description>Release a quarantined download</description>
+    <description xml:lang="en">Release a quarantined download</description>
+    <message>Authentication is required to release a quarantined file</message>
+    <message xml:lang="en">Authentication is required to release a quarantined file</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
   <!-- Cookies are sensitive credential material: fresh consent
        every time, intent-token gated even within qdbrowser. -->
   <action id="org.qdistro.qdbrowser.cookies.export">

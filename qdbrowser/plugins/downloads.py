@@ -51,6 +51,7 @@ from PyQt6.QtWebEngineCore import QWebEngineDownloadRequest, QWebEngineProfile
 from qdbrowser.config import Config, CONFIG_DIR
 from qdbrowser.plugin import SidePanelProvider, CommandProvider
 from qdbrowser import webview as wv_mod
+from qdbrowser.quarantine import QuarantineStore
 
 
 HISTORY_PATH = os.path.join(CONFIG_DIR, "downloads.json")
@@ -312,9 +313,28 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
         self._window = None
         self._wired_profiles: set = set()
         self._history = _load_history()
+        self._quarantine: Optional[QuarantineStore] = None
 
     def activate(self, window):
         self._window = window
+        # Initialise quarantine store when the feature is enabled.
+        # Downloads land here first; polkit-gated release moves them
+        # to ~/Downloads.
+        cfg = Config()
+        quarantine_enabled = cfg.get(
+            "downloads", "quarantine_enabled", default=True)
+        if quarantine_enabled:
+            try:
+                q_dir = cfg.get("downloads", "quarantine_dir",
+                                default=os.path.expanduser(
+                                    "~/.local/share/qdbrowser/quarantine"))
+                self._quarantine = QuarantineStore(q_dir)
+            except Exception as exc:
+                log.warning("quarantine store init failed, downloads go "
+                            "direct to target dir: %s", exc)
+                self._quarantine = None
+        else:
+            self._quarantine = None
         # Subscribe to "profile created" so every present and future
         # QWebEngineProfile gets its ``downloadRequested`` signal
         # wired without rebinding ``wv_mod.get_profile``. The webview
@@ -342,11 +362,60 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
         return self._panel
 
     def _on_download_requested(self, request: QWebEngineDownloadRequest):
-        target_dir = Config().get(
-            "general", "downloads_dir",
-            default=os.path.expanduser("~/Downloads"))
-        os.makedirs(target_dir, exist_ok=True)
-        request.setDownloadDirectory(target_dir)
+        qs = self._quarantine
+        if qs is not None:
+            # Quarantine path: redirect into the quarantine directory.
+            try:
+                suggested = request.downloadFileName()
+                q_path = qs.plan_path(suggested)
+                request.setDownloadDirectory(os.path.dirname(q_path))
+                request.setDownloadFileName(os.path.basename(q_path))
+
+                source_url = (request.url().toString()
+                              if hasattr(request, "url") else "")
+                content_type = ""
+                try:
+                    content_type = request.mimeType() or ""
+                except Exception:
+                    pass
+                profile_name = ""
+                try:
+                    profile_name = request.page().profile().storageName() or ""
+                except Exception:
+                    pass
+
+                row_id = qs.record(
+                    quarantine_path=q_path,
+                    filename=suggested,
+                    source_url=source_url,
+                    content_type=content_type,
+                    profile_name=profile_name,
+                    scan_result="pending",
+                )
+                # Write the sidecar metadata file.
+                try:
+                    qs.write_sidecar(row_id, q_path, {
+                        "source_url": source_url,
+                        "filename": suggested,
+                        "profile": profile_name,
+                        "content_type": content_type,
+                        "fetched_at": int(time.time()),
+                    })
+                except Exception as exc:
+                    log.warning("quarantine sidecar write failed: %s", exc)
+
+                # When the download finishes, update the hash and size,
+                # then run the scan.
+                request.isFinishedChanged.connect(
+                    lambda _r=request, _id=row_id, _qp=q_path:
+                        self._quarantine_on_finished(_r, _id, _qp))
+            except Exception as exc:
+                log.warning("quarantine redirect failed, falling back to "
+                            "direct download: %s", exc)
+                self._set_direct_download_dir(request)
+        else:
+            self._set_direct_download_dir(request)
+
         if self._panel:
             self._panel.add_active(request)
         request.accept()
@@ -355,6 +424,35 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
         # via the plugin manager rather than importing the module so
         # qdbrowser still works when bridge_adapter is disabled.
         self._notify_bridge_started(request)
+
+    def _set_direct_download_dir(self, request: QWebEngineDownloadRequest):
+        """Fallback: write directly to the user's downloads directory."""
+        target_dir = Config().get(
+            "general", "downloads_dir",
+            default=os.path.expanduser("~/Downloads"))
+        os.makedirs(target_dir, exist_ok=True)
+        request.setDownloadDirectory(target_dir)
+
+    def _quarantine_on_finished(self, request, row_id, q_path):
+        """After download finishes, hash + scan the quarantined file."""
+        if not request.isFinished():
+            return
+        if request.state() != QWebEngineDownloadRequest.DownloadState.DownloadCompleted:
+            return
+        qs = self._quarantine
+        if qs is None:
+            return
+        try:
+            from qdbrowser.quarantine import hash_file, run_scan
+            sha = hash_file(q_path) if os.path.exists(q_path) else ""
+            size = os.path.getsize(q_path) if os.path.exists(q_path) else 0
+            qs.update_after_finish(row_id, sha, size)
+            scan_cmd = Config().get("downloads", "scan_command", default="")
+            result = run_scan(scan_cmd, q_path)
+            qs.update_scan_result(row_id, result)
+        except Exception as exc:
+            log.warning("quarantine post-finish failed id=%s: %s",
+                        row_id, exc)
 
     def _notify_bridge_started(self, request: QWebEngineDownloadRequest) -> None:
         win = self._window
