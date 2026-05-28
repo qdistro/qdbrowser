@@ -174,6 +174,18 @@ DEFAULTS = {
         "cert_pins_user_path": os.path.expanduser(
             "~/.config/qdbrowser/cert-pins.json"),
         "cert_overrides_path": "/etc/qdistro/cert-overrides.json",
+        # Per-profile CA bundles. When true, qdbrowser resolves a
+        # bundle named ``<profile>-ca.pem`` for the profile selected at
+        # launch (``--profile``) and exports ``SSL_CERT_FILE`` before
+        # QtWebEngine starts. User dir wins over admin dir. Off by
+        # default (no behaviour change). NOTE: applies per-launch only —
+        # the CA trust is process-global, so a profile opened later in a
+        # running window shares the launch profile's bundle. See
+        # ca_bundle.py.
+        "per_profile_ca_bundles": False,
+        "ca_bundle_user_dir": os.path.expanduser(
+            "~/.config/qdbrowser/certs"),
+        "ca_bundle_admin_dir": "/etc/qdistro/qdbrowser/certs",
     },
     "downloads": {
         # Master switch: when true every download lands in quarantine
