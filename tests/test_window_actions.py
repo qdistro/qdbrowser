@@ -40,8 +40,7 @@ def test_stop_calls_active(window):
 
 
 def test_home_navigates_to_homepage(window, fresh_config):
-    from qdbrowser.config import Config
-    Config().set("general", "homepage", "https://homepage.test")
+    window._config.set("general", "homepage", "https://homepage.test")
     with patch.object(window._active_webview, "navigate") as nav:
         window._home()
         nav.assert_called_with("https://homepage.test")
