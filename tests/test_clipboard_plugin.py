@@ -21,6 +21,9 @@ from qdbrowser.plugins.clipboard import (
     MIME_IS_PASSWORD_FIELD,
     MIME_IS_CODE_BLOCK,
     MIME_IS_CONTENT_EDITABLE,
+    MIME_CONTEXT_PASSWORD_FIELD,
+    MIME_CONTEXT_CODE_BLOCK,
+    MIME_CONTEXT_CONTENT_EDITABLE,
     _SELECTIONCHANGE_JS,
 )
 
@@ -67,6 +70,9 @@ class TestConstants:
         assert MIME_IS_PASSWORD_FIELD == "x-qdistro-is-password-field"
         assert MIME_IS_CODE_BLOCK == "x-qdistro-is-code-block"
         assert MIME_IS_CONTENT_EDITABLE == "x-qdistro-is-content-editable"
+        assert MIME_CONTEXT_PASSWORD_FIELD == "x-qdistro-context-password-field"
+        assert MIME_CONTEXT_CODE_BLOCK == "x-qdistro-context-code-block"
+        assert MIME_CONTEXT_CONTENT_EDITABLE == "x-qdistro-context-content-editable"
 
     def test_selectionchange_js_is_iife(self):
         assert _SELECTIONCHANGE_JS.startswith("(function()")
@@ -291,6 +297,9 @@ class TestClipboardStamping:
         assert bytes(stamped.data(MIME_IS_PASSWORD_FIELD)) == b"true"
         assert bytes(stamped.data(MIME_IS_CODE_BLOCK)) == b"false"
         assert bytes(stamped.data(MIME_IS_CONTENT_EDITABLE)) == b"false"
+        assert stamped.hasFormat(MIME_CONTEXT_PASSWORD_FIELD)
+        assert not stamped.hasFormat(MIME_CONTEXT_CODE_BLOCK)
+        assert not stamped.hasFormat(MIME_CONTEXT_CONTENT_EDITABLE)
 
     def test_stamps_code_block_true_from_meta(self):
         meta = {"isPasswordField": False, "isCodeBlock": True,
@@ -299,6 +308,9 @@ class TestClipboardStamping:
         stamped = self._run_clipboard_changed(plug)
         assert bytes(stamped.data(MIME_IS_PASSWORD_FIELD)) == b"false"
         assert bytes(stamped.data(MIME_IS_CODE_BLOCK)) == b"true"
+        assert not stamped.hasFormat(MIME_CONTEXT_PASSWORD_FIELD)
+        assert stamped.hasFormat(MIME_CONTEXT_CODE_BLOCK)
+        assert not stamped.hasFormat(MIME_CONTEXT_CONTENT_EDITABLE)
 
     def test_stamps_content_editable_true_from_meta(self):
         meta = {"isPasswordField": False, "isCodeBlock": False,
@@ -306,6 +318,9 @@ class TestClipboardStamping:
         plug, _ = self._make_plugin_with_view(dom_meta=meta)
         stamped = self._run_clipboard_changed(plug)
         assert bytes(stamped.data(MIME_IS_CONTENT_EDITABLE)) == b"true"
+        assert not stamped.hasFormat(MIME_CONTEXT_PASSWORD_FIELD)
+        assert not stamped.hasFormat(MIME_CONTEXT_CODE_BLOCK)
+        assert stamped.hasFormat(MIME_CONTEXT_CONTENT_EDITABLE)
 
     def test_stamps_all_true_from_meta(self):
         meta = {"isPasswordField": True, "isCodeBlock": True,
@@ -322,6 +337,9 @@ class TestClipboardStamping:
         assert bytes(stamped.data(MIME_IS_PASSWORD_FIELD)) == b"false"
         assert bytes(stamped.data(MIME_IS_CODE_BLOCK)) == b"false"
         assert bytes(stamped.data(MIME_IS_CONTENT_EDITABLE)) == b"false"
+        assert not stamped.hasFormat(MIME_CONTEXT_PASSWORD_FIELD)
+        assert not stamped.hasFormat(MIME_CONTEXT_CODE_BLOCK)
+        assert not stamped.hasFormat(MIME_CONTEXT_CONTENT_EDITABLE)
 
     def test_non_dict_meta_yields_all_false(self):
         """If JS returns something unexpected, default to false."""
@@ -335,12 +353,24 @@ class TestClipboardStamping:
         stamped = self._run_clipboard_changed(plug)
         assert stamped.hasFormat("text/plain")
 
-    def test_reentry_guard_prevents_double_stamp(self):
-        """If clipboard already has MIME_ORIGIN_URL, skip stamping."""
+    def test_strips_spoofed_qdistro_metadata_before_stamping(self):
+        """Page-provided qdistro MIME names must not survive stamping."""
         plug, _ = self._make_plugin_with_view()
         existing = QMimeData()
-        existing.setText("already stamped")
-        existing.setData(MIME_ORIGIN_URL, QByteArray(b"https://old.com"))
+        existing.setText("spoofed")
+        existing.setData(MIME_ORIGIN_URL, QByteArray(b"https://evil.test"))
+        existing.setData(MIME_CONTEXT_PASSWORD_FIELD, QByteArray(b"1"))
+        existing.setData(MIME_CONTEXT_CODE_BLOCK, QByteArray(b"1"))
+        stamped = self._run_clipboard_changed(plug, existing)
+        assert bytes(stamped.data(MIME_ORIGIN_URL)) == b"https://x.com"
+        assert not stamped.hasFormat(MIME_CONTEXT_PASSWORD_FIELD)
+        assert not stamped.hasFormat(MIME_CONTEXT_CODE_BLOCK)
+
+    def test_internal_reentry_guard_prevents_double_stamp(self):
+        plug, _ = self._make_plugin_with_view()
+        plug._stamping_clipboard = True
+        existing = QMimeData()
+        existing.setText("already stamping")
 
         fake_clip = _FakeClipboard(owns=True, mime_data=existing)
         with patch.object(QGuiApplication, "clipboard",

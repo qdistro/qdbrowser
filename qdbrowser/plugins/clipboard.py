@@ -20,6 +20,9 @@ Phase-3 additions (semantic DOM metadata):
     * ``x-qdistro-is-password-field``  — "true"/"false"
     * ``x-qdistro-is-code-block``      — "true"/"false"
     * ``x-qdistro-is-content-editable``— "true"/"false"
+    * ``x-qdistro-context-password-field``  — present only when true
+    * ``x-qdistro-context-code-block``      — present only when true
+    * ``x-qdistro-context-content-editable``— present only when true
 
 The compositor's ``selection_set`` event sees the new MIME-list and
 qdshell's ClipboardGate forwards it as ``mime_types=`` in the journal
@@ -58,6 +61,14 @@ MIME_FETCHED_AT = "x-qdistro-fetched-at"
 MIME_IS_PASSWORD_FIELD = "x-qdistro-is-password-field"
 MIME_IS_CODE_BLOCK = "x-qdistro-is-code-block"
 MIME_IS_CONTENT_EDITABLE = "x-qdistro-is-content-editable"
+
+# Presence-only tags for compositor paths that can initially inspect
+# only the selection MIME list. The value-bearing MIME types above are
+# kept for consumers that can read clipboard data.
+MIME_CONTEXT_PASSWORD_FIELD = "x-qdistro-context-password-field"
+MIME_CONTEXT_CODE_BLOCK = "x-qdistro-context-code-block"
+MIME_CONTEXT_CONTENT_EDITABLE = "x-qdistro-context-content-editable"
+_MIME_METADATA_PREFIX = "x-qdistro-"
 
 # JS snippet injected into every page to capture selection context.
 # The handler fires on `selectionchange` and caches the result in
@@ -129,6 +140,7 @@ class ClipboardOriginPlugin(PageObserver):
         # Generation counter per view: incremented on navigation/load
         # so stale async JS callbacks don't overwrite cleared metadata.
         self._meta_gen_by_view: dict = {}  # id(webview) -> int
+        self._stamping_clipboard = False
 
     # -- lifecycle ------------------------------------------------------
 
@@ -307,9 +319,11 @@ class ClipboardOriginPlugin(PageObserver):
         existing = clip.mimeData()
         if existing is None:
             return
-        # Guard re-entry: if our origin MIME is already on the
-        # clipboard, we already stamped this payload.
-        if existing.hasFormat(MIME_ORIGIN_URL):
+        # Guard only the dataChanged event caused by our own setMimeData.
+        # Do not trust pre-existing x-qdistro-* formats on page-provided
+        # clipboard data; those are stripped below and replaced with our
+        # authoritative metadata.
+        if self._stamping_clipboard:
             return
 
         view = self._focused_view()
@@ -329,6 +343,8 @@ class ClipboardOriginPlugin(PageObserver):
         # the lifecycle. Copy each format across.
         clone = QMimeData()
         for fmt in existing.formats():
+            if fmt.startswith(_MIME_METADATA_PREFIX):
+                continue
             try:
                 data = existing.data(fmt)
                 clone.setData(fmt, data)
@@ -353,11 +369,21 @@ class ClipboardOriginPlugin(PageObserver):
                       QByteArray(is_code.encode("utf-8")))
         clone.setData(MIME_IS_CONTENT_EDITABLE,
                       QByteArray(is_editable.encode("utf-8")))
+        if is_password == "true":
+            clone.setData(MIME_CONTEXT_PASSWORD_FIELD, QByteArray(b"1"))
+        if is_code == "true":
+            clone.setData(MIME_CONTEXT_CODE_BLOCK, QByteArray(b"1"))
+        if is_editable == "true":
+            clone.setData(MIME_CONTEXT_CONTENT_EDITABLE, QByteArray(b"1"))
 
-        # Setting mime data triggers `dataChanged` again — the re-entry
-        # guard above (`hasFormat(MIME_ORIGIN_URL)`) prevents an
-        # infinite loop.
-        clip.setMimeData(clone, QClipboard.Mode.Clipboard)
+        # Setting mime data triggers `dataChanged` again; the internal
+        # flag above prevents an infinite loop without trusting copied
+        # page-provided qdistro MIME names.
+        self._stamping_clipboard = True
+        try:
+            clip.setMimeData(clone, QClipboard.Mode.Clipboard)
+        finally:
+            self._stamping_clipboard = False
 
     # TODO(track-04-phase-4): forward the same metadata via D-Bus
     # directly to the compositor so the gate doesn't have to parse
