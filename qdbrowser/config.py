@@ -174,6 +174,29 @@ DEFAULTS = {
         "cert_pins_user_path": os.path.expanduser(
             "~/.config/qdbrowser/cert-pins.json"),
         "cert_overrides_path": "/etc/qdistro/cert-overrides.json",
+        # Per-profile CA bundles. EXPERIMENTAL / UNVERIFIED. When true,
+        # qdbrowser resolves a bundle named ``<profile>-ca.pem`` for the
+        # profile selected at launch (``--profile``) and exports
+        # ``SSL_CERT_FILE`` before QtWebEngine starts. User dir wins over
+        # admin dir. Off by default (no behaviour change).
+        #
+        # WARNING: on an NSS-backed QtWebEngine build (the one shipped
+        # here, and most distro builds) Chromium reads server-CA trust
+        # from the NSS user DB (~/.pki/nssdb) and IGNORES SSL_CERT_FILE,
+        # so enabling this does NOT actually change page TLS trust. To
+        # really trust a private CA on such a build, import it with:
+        #   certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n <name> \
+        #            -i <profile>-ca.pem
+        # The SSL_CERT_FILE export only takes effect on a
+        # use_nss_certs=false QtWebEngine (unix system-trust verifier,
+        # Chromium >=M114). See qdbrowser/ca_bundle.py for the analysis.
+        # NOTE: applies per-launch only — the CA trust is process-global,
+        # so a profile opened later in a running window shares the launch
+        # profile's bundle.
+        "per_profile_ca_bundles": False,
+        "ca_bundle_user_dir": os.path.expanduser(
+            "~/.config/qdbrowser/certs"),
+        "ca_bundle_admin_dir": "/etc/qdistro/qdbrowser/certs",
     },
     "downloads": {
         # Master switch: when true every download lands in quarantine

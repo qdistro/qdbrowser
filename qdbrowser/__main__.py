@@ -69,6 +69,39 @@ def _compose_chromium_flags():
     log.info("qdbrowser.security isolate_origins=%s",
              ",".join(origins))
 
+def _apply_ca_bundle(profile):
+    """Export ``SSL_CERT_FILE`` for the launch profile's CA bundle, if
+    the feature is enabled and a safe bundle exists.
+
+    EXPERIMENTAL / UNVERIFIED: on an NSS-backed QtWebEngine build (the
+    one shipped here, Qt 6.11 / Chromium 140) Chromium reads server-CA
+    trust from the NSS user DB and IGNORES ``SSL_CERT_FILE`` — so this
+    export does not actually change page TLS trust on this build. It is
+    kept as safe forward-looking plumbing for a ``use_nss_certs=false``
+    QtWebEngine; see qdbrowser/ca_bundle.py for the full analysis and the
+    ``certutil``/``~/.pki/nssdb`` mechanism that actually works here.
+
+    Must run before QApplication is built: QtWebEngine's Chromium reads
+    the CA trust env (when it reads it at all) once at network-process
+    init. See ca_bundle.py for the per-launch limitation (the env is
+    process-global, so this is the profile selected at launch — not
+    hot-swappable between profiles in a running instance).
+    """
+    try:
+        from qdbrowser.config import Config
+        from qdbrowser.ca_bundle import apply_ca_bundle_env
+    except Exception:
+        return
+    try:
+        applied = apply_ca_bundle_env(profile, config=Config())
+    except Exception as exc:  # noqa: BLE001
+        log.warning("qdbrowser per-profile CA bundle setup failed: %s", exc)
+        return
+    if applied:
+        log.info("qdbrowser.cert ca_bundle profile=%s file=%s",
+                 profile, applied)
+
+
 from PyQt6.QtWidgets import QApplication
 
 from qdbrowser import __version__
@@ -140,6 +173,14 @@ def main(argv=None):
     # Compose --isolate-origins from config BEFORE QApplication is
     # constructed; Chromium reads its command line once at process start.
     _compose_chromium_flags()
+
+    # Attempt to export SSL_CERT_FILE for the launch profile's CA bundle
+    # BEFORE QApplication. EXPERIMENTAL/UNVERIFIED: this is a no-op on the
+    # NSS-backed QtWebEngine shipped here (Chromium ignores SSL_CERT_FILE
+    # and uses ~/.pki/nssdb); it only takes effect on a use_nss_certs=false
+    # build, which reads the CA trust env once at network-process init.
+    # See _apply_ca_bundle / ca_bundle.py.
+    _apply_ca_bundle(args.profile)
 
     app = QApplication(sys.argv)
     app.setApplicationName("qdbrowser")
