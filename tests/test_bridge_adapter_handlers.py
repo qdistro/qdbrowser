@@ -618,6 +618,7 @@ def test_recv_loop_dispatches_method_call(monkeypatch):
         def send(self, msg):
             sent_replies.append(msg)
 
+    class FakePidConn:
         def send_and_get_reply(self, msg, timeout=None):
             # For GetConnectionUnixProcessID — return a fake PID.
             result = MagicMock()
@@ -625,6 +626,7 @@ def test_recv_loop_dispatches_method_call(monkeypatch):
             return result
 
     plugin._conn = FakeConn()
+    plugin._pid_conn = FakePidConn()
 
     # Monkeypatch jeepney imports used by _recv_loop.
     # We need the real MessageType/HeaderFields enums to match.
@@ -689,12 +691,14 @@ def test_recv_loop_returns_error_for_unknown_method(monkeypatch):
         def send(self, msg):
             sent_replies.append(msg)
 
+    class FakePidConn:
         def send_and_get_reply(self, msg, timeout=None):
             result = MagicMock()
             result.body = (5678,)
             return result
 
     plugin._conn = FakeConn()
+    plugin._pid_conn = FakePidConn()
     monkeypatch.setattr(ba.select, "select",
                         lambda r, w, x, t: (r, w, x))
 
@@ -754,3 +758,76 @@ def test_recv_loop_handles_introspect(monkeypatch):
     reply = sent_replies[0]
     assert reply.header.message_type == MessageType.method_return
     assert ba.QDBROWSER_INTROSPECTION_XML in reply.body
+
+
+def test_recv_loop_denies_when_pid_resolution_fails(monkeypatch):
+    """When _pid_conn is None, mutating methods from external callers
+    must be denied (PermissionError → AccessDenied D-Bus error)."""
+    plugin = ba.BridgeAdapterPlugin()
+    plugin._active = True
+    plugin._bus_name = "org.qdistro.QdBrowser.pid1"
+    plugin._handlers = _make_handlers()
+    plugin._stop = __import__("threading").Event()
+
+    from unittest.mock import MagicMock
+    from jeepney import MessageType, HeaderFields
+
+    fake_msg = MagicMock()
+    fake_msg.header.message_type = MessageType.method_call
+    fake_msg.header.serial = 77
+    fake_msg.header.fields = {
+        HeaderFields.interface: ba.QDBROWSER_IFACE,
+        HeaderFields.path: ba.QDBROWSER_PATH,
+        HeaderFields.member: "TabsOpen",
+        HeaderFields.sender: ":1.500",
+    }
+    fake_msg.body = ("https://example.com",)
+
+    call_count = 0
+    sent_replies = []
+
+    class FakeConn:
+        sock = MagicMock()
+
+        def receive(self, timeout=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return fake_msg
+            plugin._stop.set()
+            raise TimeoutError
+
+        def send(self, msg):
+            sent_replies.append(msg)
+
+    plugin._conn = FakeConn()
+    # Deliberately leave _pid_conn as None to simulate failure.
+    plugin._pid_conn = None
+    monkeypatch.setattr(ba.select, "select",
+                        lambda r, w, x, t: (r, w, x))
+
+    plugin._recv_loop()
+
+    assert len(sent_replies) == 1
+    reply = sent_replies[0]
+    assert reply.header.message_type == MessageType.error
+    # The error should be AccessDenied.
+    from jeepney import HeaderFields as HF
+    assert "AccessDenied" in reply.header.fields.get(
+        HF.error_name, "")
+
+
+def test_resolve_sender_pid_raises_on_failure():
+    """_resolve_sender_pid raises PermissionError when the PID cannot
+    be resolved, preventing auth bypass."""
+    plugin = ba.BridgeAdapterPlugin()
+    plugin._pid_conn = None  # No PID connection.
+
+    with pytest.raises(PermissionError):
+        plugin._resolve_sender_pid(":1.123")
+
+
+def test_resolve_sender_pid_returns_none_for_no_sender():
+    """No sender (internal call) should return None, not raise."""
+    plugin = ba.BridgeAdapterPlugin()
+    assert plugin._resolve_sender_pid(None) is None

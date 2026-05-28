@@ -581,6 +581,89 @@ def _daemons_available() -> bool:
 
 
 # --------------------------------------------------------------------- #
+# Thread-safe dispatch helper
+# --------------------------------------------------------------------- #
+
+
+class _DispatchHelper:
+    """Bounces handler dispatch from the D-Bus recv thread to the main
+    thread so Qt widgets are only touched from the GUI thread.
+
+    The recv thread calls :meth:`call_on_main_thread` which posts a
+    callable into a queue and waits (with timeout) for the main thread
+    to execute it. The main thread is notified via a
+    ``QTimer.singleShot(0, ...)`` (always safe to call cross-thread in
+    Qt 6) and drains the queue.
+
+    If no Qt event loop is running (e.g. unit tests) the helper falls
+    back to direct invocation in the calling thread.
+    """
+
+    def __init__(self):
+        self._queue: list = []
+        self._lock = threading.Lock()
+
+    def _qt_app_running(self) -> bool:
+        """Return True if a QApplication exists (i.e. we have a real
+        event loop to post to). In unit tests without QApplication,
+        we fall back to direct invocation."""
+        try:
+            from PyQt6.QtWidgets import QApplication
+            return QApplication.instance() is not None
+        except ImportError:
+            return False
+
+    def call_on_main_thread(self, fn: Callable, timeout: float = 10.0
+                            ) -> Any:
+        """Execute ``fn()`` on the Qt main thread and return its result.
+
+        Blocks the calling thread until the main thread has finished
+        or ``timeout`` seconds have elapsed (raises ``TimeoutError``).
+        """
+        if not self._qt_app_running():
+            # No Qt event loop (unit tests, headless) — run directly.
+            return fn()
+
+        result_holder: dict = {"value": None, "exc": None, "done": False}
+        done_event = threading.Event()
+
+        def _run():
+            try:
+                result_holder["value"] = fn()
+            except Exception as exc:
+                result_holder["exc"] = exc
+            finally:
+                result_holder["done"] = True
+                done_event.set()
+
+        with self._lock:
+            self._queue.append(_run)
+
+        # Schedule a drain on the main thread.
+        try:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, self._drain)
+        except Exception:
+            # Fallback: execute directly (e.g. no QApp).
+            _run()
+            done_event.set()
+
+        if not done_event.wait(timeout=timeout):
+            raise TimeoutError("main-thread dispatch timed out")
+
+        if result_holder["exc"] is not None:
+            raise result_holder["exc"]
+        return result_holder["value"]
+
+    def _drain(self):
+        with self._lock:
+            pending = list(self._queue)
+            self._queue.clear()
+        for fn in pending:
+            fn()
+
+
+# --------------------------------------------------------------------- #
 # Plugin
 # --------------------------------------------------------------------- #
 
@@ -596,6 +679,10 @@ class BridgeAdapterPlugin(Plugin):
         self._active = False
         self._window = None
         self._conn = None
+        # Separate connection for PID lookups so that
+        # send_and_get_reply doesn't consume inbound method-call
+        # messages from the main receive connection.
+        self._pid_conn = None
         self._bus_name: Optional[str] = None
         self._handlers: Optional[BridgeAdapterHandlers] = None
         self.tabs_proxy: Optional[TabsProxy] = None
@@ -605,6 +692,7 @@ class BridgeAdapterPlugin(Plugin):
         self.history_proxy: Optional[HistoryProxy] = None
         self.bookmarks_proxy: Optional[BookmarksProxy] = None
         self._recv_thread: Optional[threading.Thread] = None
+        self._dispatch_helper = _DispatchHelper()
         self._stop = threading.Event()
 
     @property
@@ -745,6 +833,12 @@ class BridgeAdapterPlugin(Plugin):
                 except Exception:
                     pass
                 self._conn = None
+            if self._pid_conn is not None:
+                try:
+                    self._pid_conn.close()
+                except Exception:
+                    pass
+                self._pid_conn = None
             # Wait for the receive thread to notice the stop event
             # and exit. The thread checks _stop every 0.5 s and the
             # socket close above unblocks any pending select().
@@ -767,6 +861,16 @@ class BridgeAdapterPlugin(Plugin):
         except Exception as exc:
             log.warning("session bus unavailable: %s", exc)
             return False
+        # Open a second connection dedicated to PID lookups. This
+        # avoids consuming inbound method-call messages from the
+        # main receive connection when send_and_get_reply blocks.
+        try:
+            self._pid_conn = open_dbus_connection(bus="SESSION")
+        except Exception as exc:
+            log.warning("could not open PID-lookup bus connection: %s",
+                        exc)
+            # Non-fatal: PID resolution will fall back to denying
+            # mutating calls when _pid_conn is None.
         name = f"org.qdistro.QdBrowser.pid{os.getpid()}"
         bus = DBusAddress(
             "/org/freedesktop/DBus",
@@ -902,14 +1006,16 @@ class BridgeAdapterPlugin(Plugin):
             if iface != QDBROWSER_IFACE or path != QDBROWSER_PATH:
                 continue
 
-            # Resolve the caller's PID for polkit gating.
+            # Resolve the caller's PID for polkit gating, then
+            # dispatch on the main thread so Qt widgets are never
+            # touched from this background thread.
             sender = fields.get(HeaderFields.sender)
-            caller_pid = self._resolve_sender_pid(sender)
-
-            # Dispatch.
             try:
-                body, sig = self._handlers.dispatch(
-                    member, msg.body, caller_pid=caller_pid)
+                caller_pid = self._resolve_sender_pid(sender)
+                _member, _body, _pid = member, msg.body, caller_pid
+                body, sig = self._dispatch_helper.call_on_main_thread(
+                    lambda: self._handlers.dispatch(
+                        _member, _body, caller_pid=_pid))
                 reply = new_method_return(msg, sig, body)
             except PermissionError as exc:
                 reply = new_error(
@@ -936,12 +1042,23 @@ class BridgeAdapterPlugin(Plugin):
                             ) -> Optional[int]:
         """Ask the bus daemon for the Unix PID of ``sender``.
 
-        Returns None on any failure (the polkit gate treats None as
-        'internal call' and skips the check — callers without a
-        resolvable PID still get the open-actions short-circuit).
+        Returns the PID as an int, or raises ``PermissionError`` if
+        the PID cannot be resolved for an external caller. This
+        prevents an authorization bypass where a failed
+        ``GetConnectionUnixProcessID`` call would previously return
+        ``None`` (treated as 'internal/trusted' by ``polkit_check``).
+
+        Uses ``_pid_conn`` (a dedicated D-Bus connection) so the
+        blocking ``send_and_get_reply`` does not consume inbound
+        method-call messages from the main receive connection.
         """
-        if sender is None or self._conn is None:
+        if sender is None:
+            # No sender header — treat as internal (e.g. tests).
             return None
+        pid_conn = self._pid_conn
+        if pid_conn is None:
+            raise PermissionError(
+                "no PID-lookup bus connection; cannot authorize caller")
         try:
             from jeepney import DBusAddress, new_method_call
             bus = DBusAddress(
@@ -949,7 +1066,7 @@ class BridgeAdapterPlugin(Plugin):
                 bus_name="org.freedesktop.DBus",
                 interface="org.freedesktop.DBus",
             )
-            reply = self._conn.send_and_get_reply(
+            reply = pid_conn.send_and_get_reply(
                 new_method_call(
                     bus, "GetConnectionUnixProcessID",
                     "s", (sender,)),
@@ -958,4 +1075,5 @@ class BridgeAdapterPlugin(Plugin):
                 return int(reply.body[0])
         except Exception as exc:
             log.debug("could not resolve PID for %s: %s", sender, exc)
-        return None
+        raise PermissionError(
+            f"could not resolve PID for D-Bus sender {sender!r}")
