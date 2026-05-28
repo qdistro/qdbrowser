@@ -260,6 +260,23 @@ def test_apply_disabled_by_default(tmp_path, ca_pem):
     assert "SSL_CERT_FILE" not in env
 
 
+def test_apply_default_off_when_no_config(tmp_path, ca_pem, monkeypatch):
+    """With no config object the helper must be OFF and never touch the
+    env, even when a perfectly valid bundle exists in the default search
+    dirs. (Regression: it previously defaulted enabled=True.)"""
+    from qdbrowser import ca_bundle
+    user = tmp_path / "user-certs"
+    _write_bundle(str(user), "work", ca_pem)
+    # Point the module-level default dirs at our valid bundle so that,
+    # if the helper were wrongly enabled, it WOULD resolve and export.
+    monkeypatch.setattr(ca_bundle, "USER_CERTS_DIR", str(user))
+    monkeypatch.setattr(ca_bundle, "ADMIN_CERTS_DIR", str(tmp_path / "a"))
+    env = {}
+    applied = ca_bundle.apply_ca_bundle_env("work", config=None, environ=env)
+    assert applied is None
+    assert "SSL_CERT_FILE" not in env
+
+
 def test_apply_absent_bundle_no_env_change(tmp_path):
     from qdbrowser.ca_bundle import apply_ca_bundle_env
     env = {}

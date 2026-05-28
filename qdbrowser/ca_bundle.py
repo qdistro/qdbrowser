@@ -1,28 +1,66 @@
 """Per-profile CA bundle resolution for qdbrowser.
 
+EXPERIMENTAL / UNVERIFIED — read this before trusting the feature
+====================================================================
+This module exports ``SSL_CERT_FILE`` to point QtWebEngine at a
+per-profile CA bundle. **On the QtWebEngine build shipped in this
+environment that almost certainly does NOTHING for HTTPS page TLS
+validation**, and the same is true for most distro QtWebEngine builds.
+Do not assume a page's server-certificate trust is actually changed by
+enabling this feature without a live HTTPS test against a custom CA.
+
+Why it may be a no-op
+---------------------
+QtWebEngine validates server certificates with its bundled Chromium
+network stack, NOT Qt's ``QSslSocket`` / ``QSslConfiguration``. How
+Chromium finds *system* trust anchors on Linux depends on how that
+Chromium was built:
+
+  * ``use_nss_certs=true`` (the historical default, and what Qt's
+    QtWebEngine is built with): trust comes from **NSS** — the per-user
+    NSS database at ``~/.pki/nssdb`` (``trust_store_nss.cc``). Chromium
+    **ignores** ``SSL_CERT_FILE`` / ``SSL_CERT_DIR`` in this mode.
+  * ``use_nss_certs=false`` with the unix system-trust verifier
+    (``net/cert/internal/trust_store_unix.cc``, added upstream ≈M114 /
+    2023): this reader honours ``SSL_CERT_FILE`` / ``SSL_CERT_DIR``.
+
+Inspecting the bundled ``libQt6WebEngineCore`` in this environment
+(Qt 6.11.0, Chromium 140) shows it references ``trust_store_nss.cc`` and
+``~/.pki`` / ``sql:`` NSS-DB strings but contains **no**
+``trust_store_unix.cc`` and **no** ``SSL_CERT_FILE`` / ``SSL_CERT_DIR``
+literal at all. That is strong evidence this build is the NSS variant,
+so the ``SSL_CERT_FILE`` export here is expected to be a no-op for page
+TLS. We keep the (harmless, safe) export as forward-looking plumbing for
+a future ``use_nss_certs=false`` build, but it is **unverified** by a
+live TLS test.
+
+The real mechanism for THIS build (NSS user DB)
+-----------------------------------------------
+To actually make a profile trust an enterprise/private CA on an
+NSS-backed QtWebEngine, import the CA into the user's NSS DB::
+
+    mkdir -p ~/.pki/nssdb
+    certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n "my-ca" \\
+        -i /path/to/<profile>-ca.pem
+
+That is process-global too (one NSS DB per user), so it does not give
+per-profile isolation inside a single running instance — see the
+per-launch note below. qdbrowser does not perform this import
+automatically; it is documented here so a reader knows where trust
+actually lives.
+
+Per-launch limitation (applies to either mechanism)
+---------------------------------------------------
 QtWebEngine does **not** expose a per-``QWebEngineProfile`` SSL/CA
-configuration. Its bundled Chromium reads the CA trust source from the
-``SSL_CERT_FILE`` / ``SSL_CERT_DIR`` environment variables **once**, when
-the network process initialises — i.e. at QtWebEngine startup, before
-``QApplication`` is constructed. There is no supported way to swap the
-CA bundle for a single profile while the engine is already running.
-
-qdbrowser runs every profile (``default``, ``work``, ``private``, ...)
-inside a **single OS process** — see ``webview.get_profile`` which mints
-named ``QWebEngineProfile`` objects in one process. Because the env var
-is process-global and consumed once, the only mechanism that actually
-takes effect is to set ``SSL_CERT_FILE`` for the profile selected at
-**launch** (the ``--profile`` argument), before ``QApplication`` is
-built. That is exactly what ``__main__.py`` does for the site-isolation
-Chromium flags, so we hook in at the same point.
-
-Honest limitation (documented, not hidden): the CA bundle applies
-per-launch. A user who wants the ``work`` profile to trust enterprise
-CAs launches ``qdbrowser --profile work``; the resulting process trusts
-that bundle. Profiles opened *afterward* in the same running window
-share the same network process and therefore the same CA trust — the
-bundle is **not** hot-swappable between profiles in one instance. To get
-a CA bundle that ``personal`` does *not* trust, launch ``personal`` as a
+configuration, and qdbrowser runs every profile (``default``, ``work``,
+``private``, ...) inside a **single OS process** — see
+``webview.get_profile`` which mints named ``QWebEngineProfile`` objects
+in one process. The CA trust source (whichever it is) is consumed once,
+process-wide, so even if the mechanism worked it would only affect the
+profile selected at **launch** (the ``--profile`` argument). Profiles
+opened *afterward* in the same running window share the same network
+process and therefore the same CA trust — not hot-swappable between
+profiles in one instance. To isolate trust, launch ``personal`` as a
 separate process. This matches qdistro's per-silo launch story.
 
 Resolution order for a profile ``<p>`` (later wins is *not* the model —
@@ -248,13 +286,27 @@ def apply_ca_bundle_env(profile: str,
                         environ: Optional[dict] = None) -> Optional[str]:
     """Set ``SSL_CERT_FILE`` for ``profile`` if a safe bundle exists.
 
+    .. warning::
+       EXPERIMENTAL / UNVERIFIED. On an NSS-backed QtWebEngine build
+       (including the one in this environment) Chromium ignores
+       ``SSL_CERT_FILE`` and this export does **not** change page TLS
+       trust — see the module docstring. The real mechanism for such
+       builds is importing the CA into ``~/.pki/nssdb`` with
+       ``certutil``. This function still performs the safe env export as
+       forward-looking plumbing for a ``use_nss_certs=false`` build, but
+       callers must not treat a non-None return as proof that the CA is
+       actually trusted by QtWebEngine.
+
     Must be called **before** ``QApplication`` / QtWebEngine starts; the
     env var is read once by Chromium's network process. Returns the
     bundle path that was applied, or None if nothing changed.
 
-    The feature is **off** unless ``[security] per_profile_ca_bundles`` is
-    true in config. When off, or when no safe bundle resolves, the
-    environment is left untouched (no behaviour change).
+    The feature is **off by default**. It only acts when a ``config``
+    object is supplied AND ``[security] per_profile_ca_bundles`` is true
+    in it. When ``config`` is None we default to OFF and do nothing —
+    callers that want the env applied must pass a config with the flag
+    set. When off, or when no safe bundle resolves, the environment is
+    left untouched (no behaviour change).
 
     We never clobber an ``SSL_CERT_FILE`` the user already exported — an
     explicit env wins over the per-profile auto-resolution, the same way
@@ -262,7 +314,10 @@ def apply_ca_bundle_env(profile: str,
     """
     environ = os.environ if environ is None else environ
 
-    enabled = True
+    # Safe default OFF: with no config object we have no opt-in signal,
+    # so we do nothing. (Previously this defaulted enabled=True, which
+    # contradicted the documented default-off intent.)
+    enabled = False
     if config is not None:
         try:
             enabled = bool(config.get(
