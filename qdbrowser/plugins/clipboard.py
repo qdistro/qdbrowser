@@ -11,15 +11,25 @@ Phase-1 deliverable for track-04. Scope:
     * ``x-qdistro-origin-tab-id``    — qdbrowser's stable webview id
     * ``x-qdistro-fetched-at``       — ISO-8601 timestamp
 
+Phase-3 additions (semantic DOM metadata):
+
+- Inject a ``selectionchange`` JS handler on every page load that
+  stashes ``window.__qdistro_clipboard_meta`` with semantic DOM
+  context: ``isPasswordField``, ``isCodeBlock``, ``isContentEditable``.
+- On copy, read the cached metadata and stamp extra MIME types:
+    * ``x-qdistro-is-password-field``  — "true"/"false"
+    * ``x-qdistro-is-code-block``      — "true"/"false"
+    * ``x-qdistro-is-content-editable``— "true"/"false"
+
 The compositor's ``selection_set`` event sees the new MIME-list and
 qdshell's ClipboardGate forwards it as ``mime_types=`` in the journal
-line. Phase-2 will add semantic tags (is_password_field, code_block,
-content_editable) from the JS ``selectionchange`` handler described in
-``todo/browser/04-compositor-clipboard.md``.
+line. The content_tags broker rule selector can match these types to
+enforce finer-grained policy (e.g., deny password-field content from
+crossing silo boundaries).
 
-Note: Phase-1 does NOT block paste — the compositor handles that side
-via ``clear_selection``. The plugin only attaches origin metadata at
-copy-time.
+Note: The plugin does NOT block paste — the compositor handles that
+side via ``clear_selection``. The plugin only attaches origin metadata
+at copy-time.
 """
 
 from __future__ import annotations
@@ -44,6 +54,38 @@ MIME_ORIGIN_URL = "x-qdistro-origin-url"
 MIME_ORIGIN_TAB_ID = "x-qdistro-origin-tab-id"
 MIME_FETCHED_AT = "x-qdistro-fetched-at"
 
+# Phase-3 semantic DOM metadata MIME types.
+MIME_IS_PASSWORD_FIELD = "x-qdistro-is-password-field"
+MIME_IS_CODE_BLOCK = "x-qdistro-is-code-block"
+MIME_IS_CONTENT_EDITABLE = "x-qdistro-is-content-editable"
+
+# JS snippet injected into every page to capture selection context.
+# The handler fires on `selectionchange` and caches the result in
+# `window.__qdistro_clipboard_meta` so it is available synchronously
+# when the copy event reaches the Qt clipboard hook.
+_SELECTIONCHANGE_JS = (
+    "(function() {"
+    "  if (window.__qdistro_selectionchange_wired) return;"
+    "  window.__qdistro_selectionchange_wired = true;"
+    "  document.addEventListener('selectionchange', function() {"
+    "    var sel = window.getSelection();"
+    "    if (!sel || sel.isCollapsed) {"
+    "      window.__qdistro_clipboard_meta = null;"
+    "      return;"
+    "    }"
+    "    var anchor = sel.anchorNode;"
+    "    var parent = anchor && anchor.parentElement ? anchor.parentElement : null;"
+    "    window.__qdistro_clipboard_meta = {"
+    "      url: location.href,"
+    "      isPasswordField: !!(parent && parent.tagName === 'INPUT'"
+    "                          && parent.type === 'password'),"
+    "      isCodeBlock: !!(parent && parent.closest && parent.closest('pre, code')),"
+    "      isContentEditable: !!(parent && parent.isContentEditable)"
+    "    };"
+    "  });"
+    "})()"
+)
+
 
 class ClipboardOriginPlugin(PageObserver):
     """Attach origin metadata to clipboard writes from web pages.
@@ -65,6 +107,9 @@ class ClipboardOriginPlugin(PageObserver):
         self._wired_views: dict = {}  # id(webview) -> webview
         self._last_url_by_view: dict = {}  # id(webview) -> url string
         self._clipboard_conn = None
+        # Phase-3: cached DOM metadata per view, populated by the JS
+        # callback reading window.__qdistro_clipboard_meta.
+        self._dom_meta_by_view: dict = {}  # id(webview) -> dict|None
 
     # -- lifecycle ------------------------------------------------------
 
@@ -100,6 +145,7 @@ class ClipboardOriginPlugin(PageObserver):
         self._clipboard_conn = None
         self._wired_views.clear()
         self._last_url_by_view.clear()
+        self._dom_meta_by_view.clear()
 
     # -- page observer hooks --------------------------------------------
 
@@ -109,6 +155,8 @@ class ClipboardOriginPlugin(PageObserver):
 
     def on_load_finished(self, webview, ok):
         self._wire_view(webview)
+        if ok:
+            self._inject_selectionchange_handler(webview)
 
     # -- internals ------------------------------------------------------
 
@@ -125,6 +173,67 @@ class ClipboardOriginPlugin(PageObserver):
                 self._last_url_by_view[vid] = current
         except Exception:
             pass
+        # Connect to the page's selectionChanged signal so we can
+        # proactively read the JS-side DOM metadata before the user
+        # triggers a copy. The cached value is used synchronously in
+        # _on_clipboard_changed.
+        try:
+            page = webview.view.page() if webview.view else None
+            if page is not None:
+                page.selectionChanged.connect(
+                    lambda _vid=vid, _wv=webview: self._on_selection_changed(_vid, _wv)
+                )
+        except Exception as exc:
+            log.debug("clipboard: selectionChanged connect failed: %s", exc)
+
+    def _on_selection_changed(self, vid, webview):
+        """Called when the page's text selection changes (Qt signal).
+
+        Fires an async JS read of ``window.__qdistro_clipboard_meta``
+        and caches the result. By the time the user presses Ctrl+C,
+        the cache is warm and ``_on_clipboard_changed`` reads it
+        synchronously.
+        """
+        self._read_dom_meta(
+            webview,
+            lambda meta, _vid=vid: self._cache_dom_meta(_vid, meta),
+        )
+
+    def _cache_dom_meta(self, vid, meta):
+        """Store the JS-reported DOM metadata for ``vid``."""
+        self._dom_meta_by_view[vid] = meta
+
+    def _inject_selectionchange_handler(self, webview):
+        """Inject the selectionchange JS into ``webview``'s page.
+
+        The JS sets ``window.__qdistro_clipboard_meta`` whenever the
+        user changes the text selection. A guard variable
+        (``__qdistro_selectionchange_wired``) prevents duplicate
+        listeners if the method is called more than once per page.
+        """
+        try:
+            page = webview.view.page() if webview.view else None
+            if page is None:
+                return
+            page.runJavaScript(_SELECTIONCHANGE_JS)
+        except Exception as exc:
+            log.debug("clipboard: JS injection failed: %s", exc)
+
+    def _read_dom_meta(self, webview, callback):
+        """Asynchronously read ``window.__qdistro_clipboard_meta`` from
+        ``webview``'s page and invoke ``callback(meta_dict_or_None)``.
+        """
+        try:
+            page = webview.view.page() if webview.view else None
+            if page is None:
+                callback(None)
+                return
+            page.runJavaScript(
+                "window.__qdistro_clipboard_meta",
+                callback,
+            )
+        except Exception:
+            callback(None)
 
     def _focused_view(self):
         """Best-effort lookup of the webview that just wrote the
@@ -187,19 +296,27 @@ class ClipboardOriginPlugin(PageObserver):
         clone.setData(MIME_ORIGIN_TAB_ID, QByteArray(tab_id.encode("utf-8")))
         clone.setData(MIME_FETCHED_AT, QByteArray(fetched_at.encode("utf-8")))
 
+        # Phase-3: stamp semantic DOM metadata from the cached JS read.
+        meta = self._dom_meta_by_view.get(vid)
+        is_password = "false"
+        is_code = "false"
+        is_editable = "false"
+        if isinstance(meta, dict):
+            is_password = "true" if meta.get("isPasswordField") else "false"
+            is_code = "true" if meta.get("isCodeBlock") else "false"
+            is_editable = "true" if meta.get("isContentEditable") else "false"
+        clone.setData(MIME_IS_PASSWORD_FIELD,
+                      QByteArray(is_password.encode("utf-8")))
+        clone.setData(MIME_IS_CODE_BLOCK,
+                      QByteArray(is_code.encode("utf-8")))
+        clone.setData(MIME_IS_CONTENT_EDITABLE,
+                      QByteArray(is_editable.encode("utf-8")))
+
         # Setting mime data triggers `dataChanged` again — the re-entry
         # guard above (`hasFormat(MIME_ORIGIN_URL)`) prevents an
         # infinite loop.
         clip.setMimeData(clone, QClipboard.Mode.Clipboard)
 
-    # TODO(track-04-phase-2): inject a `selectionchange` JS handler on
-    # every page load that stashes window.__qdistro_clipboard_meta with
-    # is_password_field, is_code_block, is_content_editable. Read it
-    # synchronously here and surface as extra MIME types
-    # (x-qdistro-tag-password, x-qdistro-tag-code) so the compositor
-    # policy can match them via the broker rule's `content_tags:`
-    # selector.
-    #
-    # TODO(track-04-phase-3): forward the same metadata via D-Bus
+    # TODO(track-04-phase-4): forward the same metadata via D-Bus
     # directly to the compositor so the gate doesn't have to parse
     # custom MIME types — useful for clients that strip unknown MIMEs.
