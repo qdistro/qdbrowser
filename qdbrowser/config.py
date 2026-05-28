@@ -130,7 +130,13 @@ DEFAULTS = {
     },
     "workspaces": {},
     "sessions": {},
-    "plugins": {},
+    "plugins": {
+        "bridge_adapter": {
+            # Default activation is conditional: MainWindow probes for
+            # qdistro daemons when ``enabled`` is unset.
+            "auto_register": True,
+        },
+    },
     "dark_mode": {
         "default": "auto",     # auto / always / never / contrast
         "site_overrides": {},

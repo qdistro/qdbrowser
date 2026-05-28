@@ -32,10 +32,13 @@ import threading
 from typing import Any, Callable, Optional
 
 
+from qdbrowser.config import Config
 from qdbrowser.plugin import Plugin
 
 
 log = logging.getLogger("qdbrowser.bridge_adapter")
+
+_UNSET = object()
 
 
 # qdistro daemon D-Bus well-known names we probe for. Presence of any
@@ -577,7 +580,19 @@ def _daemons_available() -> bool:
                 conn.close()
             except Exception:
                 pass
-    return any(n in names for n in _DAEMON_NAMES)
+    return bool(names)
+
+
+def _enabled_config_override() -> Optional[bool]:
+    """Return explicit bridge_adapter config, or None for autodetect."""
+    value = Config().get("plugins", "bridge_adapter", default=_UNSET)
+    if value is _UNSET:
+        return None
+    if isinstance(value, dict):
+        if "enabled" not in value:
+            return None
+        return bool(value.get("enabled"))
+    return bool(value)
 
 
 # --------------------------------------------------------------------- #
@@ -727,7 +742,11 @@ class BridgeAdapterPlugin(Plugin):
 
     def activate(self, app_controller):
         self._window = app_controller
-        if not _daemons_available():
+        explicit = _enabled_config_override()
+        if explicit is False:
+            log.info("bridge_adapter disabled by config")
+            return
+        if explicit is not True and not _daemons_available():
             log.info(
                 "qdistro daemons not detected on the session bus; "
                 "bridge_adapter staying inactive")

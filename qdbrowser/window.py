@@ -209,16 +209,30 @@ class MainWindow(QMainWindow):
             # + tab id so the qdshell ClipboardGate sees them as
             # extra MIME types on selection_set.
             "clipboard",
-            # track-02: bridge adapter for qdistro daemon integration.
-            # The plugin itself handles graceful degradation when
-            # daemons are not present on the session bus.
-            "bridge_adapter",
         ]
         for name in always_on:
             try:
                 self.plugins.enable(name, app_controller=self)
             except Exception as exc:
                 log.exception("plugin %s failed: %s", name, exc)
+
+        if self._should_enable_bridge_adapter():
+            try:
+                self.plugins.enable("bridge_adapter", app_controller=self)
+            except Exception as exc:
+                log.exception("plugin bridge_adapter failed: %s", exc)
+
+    def _should_enable_bridge_adapter(self) -> bool:
+        try:
+            from qdbrowser.plugins.bridge_adapter import (
+                _daemons_available, _enabled_config_override)
+            explicit = _enabled_config_override()
+            if explicit is not None:
+                return explicit
+            return _daemons_available()
+        except Exception as exc:
+            log.debug("bridge_adapter daemon probe failed: %s", exc)
+            return False
 
     def register_agent_methods_later(self, plugin) -> None:
         """Plugins call this from ``activate`` to defer RPC registration

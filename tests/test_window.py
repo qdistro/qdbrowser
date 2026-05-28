@@ -2,7 +2,9 @@
 
 from PyQt6.QtCore import Qt
 
+from qdbrowser.config import Config
 from qdbrowser.webview import WebView
+from qdbrowser.window import MainWindow
 
 
 def test_window_starts_with_one_tab(window):
@@ -46,6 +48,51 @@ def test_default_plugins_enabled(window):
               "screenshot", "reader_mode", "dark_mode",
               "picture_in_picture", "tab_list", "translate"):
         assert p in enabled, f"{p} should be enabled by default"
+
+
+def _window_config_probe():
+    win = MainWindow.__new__(MainWindow)
+    win._config = Config()
+    return win
+
+
+def test_bridge_adapter_default_follows_daemon_probe(
+        fresh_config, monkeypatch):
+    import qdbrowser.plugins.bridge_adapter as ba
+    win = _window_config_probe()
+
+    monkeypatch.setattr(ba, "_daemons_available", lambda: True)
+    assert win._should_enable_bridge_adapter() is True
+
+    monkeypatch.setattr(ba, "_daemons_available", lambda: False)
+    assert win._should_enable_bridge_adapter() is False
+
+
+def test_bridge_adapter_nested_enabled_config_wins(
+        fresh_config, monkeypatch):
+    import qdbrowser.plugins.bridge_adapter as ba
+    win = _window_config_probe()
+    monkeypatch.setattr(ba, "_daemons_available", lambda: True)
+
+    Config().set("plugins", "bridge_adapter", "enabled", False)
+    assert win._should_enable_bridge_adapter() is False
+
+    Config().set("plugins", "bridge_adapter", "enabled", True)
+    monkeypatch.setattr(ba, "_daemons_available", lambda: False)
+    assert win._should_enable_bridge_adapter() is True
+
+
+def test_bridge_adapter_flat_enabled_config_wins(fresh_config, monkeypatch):
+    import qdbrowser.plugins.bridge_adapter as ba
+    win = _window_config_probe()
+    monkeypatch.setattr(ba, "_daemons_available", lambda: True)
+
+    Config().set("plugins", "bridge_adapter", False)
+    assert win._should_enable_bridge_adapter() is False
+
+    Config().set("plugins", "bridge_adapter", True)
+    monkeypatch.setattr(ba, "_daemons_available", lambda: False)
+    assert win._should_enable_bridge_adapter() is True
 
 
 def test_side_panel_has_panels(window):
