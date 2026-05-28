@@ -69,18 +69,34 @@ _SELECTIONCHANGE_JS = (
     "  window.__qdistro_selectionchange_wired = true;"
     "  document.addEventListener('selectionchange', function() {"
     "    var sel = window.getSelection();"
-    "    if (!sel || sel.isCollapsed) {"
+    "    var ae = document.activeElement;"
+    # Selections inside <input>/<textarea> don't appear in
+    # window.getSelection() — they use the element's own
+    # selectionStart/selectionEnd. Detect this by checking the
+    # active element directly.
+    "    var inFormControl = !!(ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')"
+    "                          && typeof ae.selectionStart === 'number'"
+    "                          && ae.selectionStart !== ae.selectionEnd);"
+    "    if ((!sel || sel.isCollapsed) && !inFormControl) {"
     "      window.__qdistro_clipboard_meta = null;"
     "      return;"
     "    }"
-    "    var anchor = sel.anchorNode;"
+    "    var anchor = sel && !sel.isCollapsed ? sel.anchorNode : null;"
     "    var parent = anchor && anchor.parentElement ? anchor.parentElement : null;"
+    # For password detection: check both the selection parent (for
+    # contentEditable password fields) and the active element (for
+    # native <input type=password> which doesn't expose selection
+    # via window.getSelection).
+    "    var isPasswd = !!(parent && parent.tagName === 'INPUT'"
+    "                      && parent.type === 'password')"
+    "                 || !!(ae && ae.tagName === 'INPUT'"
+    "                        && ae.type === 'password');"
     "    window.__qdistro_clipboard_meta = {"
     "      url: location.href,"
-    "      isPasswordField: !!(parent && parent.tagName === 'INPUT'"
-    "                          && parent.type === 'password'),"
+    "      isPasswordField: isPasswd,"
     "      isCodeBlock: !!(parent && parent.closest && parent.closest('pre, code')),"
     "      isContentEditable: !!(parent && parent.isContentEditable)"
+    "                        || !!(ae && ae.isContentEditable)"
     "    };"
     "  });"
     "})()"
@@ -150,10 +166,17 @@ class ClipboardOriginPlugin(PageObserver):
     # -- page observer hooks --------------------------------------------
 
     def on_navigation(self, webview, url):
-        self._last_url_by_view[id(webview)] = url
+        vid = id(webview)
+        self._last_url_by_view[vid] = url
+        # Invalidate stale DOM metadata from the previous page so a
+        # copy on the new page doesn't inherit the old page's tags.
+        self._dom_meta_by_view.pop(vid, None)
         self._wire_view(webview)
 
     def on_load_finished(self, webview, ok):
+        vid = id(webview)
+        # Clear stale metadata on every load (success or failure).
+        self._dom_meta_by_view.pop(vid, None)
         self._wire_view(webview)
         if ok:
             self._inject_selectionchange_handler(webview)

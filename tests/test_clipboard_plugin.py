@@ -81,11 +81,23 @@ class TestConstants:
     def test_selectionchange_js_detects_password_field(self):
         assert "password" in _SELECTIONCHANGE_JS
 
+    def test_selectionchange_js_checks_active_element_for_password(self):
+        """Password detection must check document.activeElement, not just
+        selection parent, because native input selections are invisible
+        to window.getSelection()."""
+        assert "activeElement" in _SELECTIONCHANGE_JS
+        assert "ae.type === 'password'" in _SELECTIONCHANGE_JS
+
     def test_selectionchange_js_detects_code_block(self):
         assert "pre, code" in _SELECTIONCHANGE_JS
 
     def test_selectionchange_js_detects_content_editable(self):
         assert "isContentEditable" in _SELECTIONCHANGE_JS
+
+    def test_selectionchange_js_handles_form_control_selection(self):
+        """Input/textarea selections use selectionStart/End, not
+        window.getSelection(). The JS must account for this."""
+        assert "selectionStart" in _SELECTIONCHANGE_JS
 
 
 # -- plugin construction / lifecycle ---------------------------------------
@@ -362,3 +374,46 @@ class TestWireView:
         wv = _make_mock_webview(url="https://docs.python.org")
         plug._wire_view(wv)
         assert plug._last_url_by_view[id(wv)] == "https://docs.python.org"
+
+
+# -- stale metadata clearing on navigation/load ---------------------------
+
+class TestStaleMetadataClearing:
+    def test_on_navigation_clears_cached_dom_meta(self):
+        plug = ClipboardOriginPlugin()
+        wv = _make_mock_webview()
+        vid = id(wv)
+        plug._dom_meta_by_view[vid] = {"isPasswordField": True}
+        plug.on_navigation(wv, "https://newsite.com")
+        assert vid not in plug._dom_meta_by_view
+
+    def test_on_navigation_updates_url(self):
+        plug = ClipboardOriginPlugin()
+        wv = _make_mock_webview(url="https://newsite.com")
+        plug.on_navigation(wv, "https://newsite.com")
+        assert plug._last_url_by_view[id(wv)] == "https://newsite.com"
+
+    def test_on_navigation_updates_url_on_already_wired_view(self):
+        """If the view is already wired, on_navigation still updates the URL."""
+        plug = ClipboardOriginPlugin()
+        wv = _make_mock_webview(url="https://old.com")
+        plug._wire_view(wv)
+        assert plug._last_url_by_view[id(wv)] == "https://old.com"
+        plug.on_navigation(wv, "https://new.com")
+        assert plug._last_url_by_view[id(wv)] == "https://new.com"
+
+    def test_on_load_finished_clears_cached_dom_meta(self):
+        plug = ClipboardOriginPlugin()
+        wv = _make_mock_webview()
+        vid = id(wv)
+        plug._dom_meta_by_view[vid] = {"isCodeBlock": True}
+        plug.on_load_finished(wv, True)
+        assert vid not in plug._dom_meta_by_view
+
+    def test_on_load_finished_clears_meta_even_on_failure(self):
+        plug = ClipboardOriginPlugin()
+        wv = _make_mock_webview()
+        vid = id(wv)
+        plug._dom_meta_by_view[vid] = {"isContentEditable": True}
+        plug.on_load_finished(wv, False)
+        assert vid not in plug._dom_meta_by_view
