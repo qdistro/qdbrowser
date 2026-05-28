@@ -23,8 +23,10 @@ implementing them locally.
 
 from __future__ import annotations
 
+import datetime
 import logging
 import os
+import select
 import subprocess
 import threading
 from typing import Any, Callable, Optional
@@ -104,6 +106,18 @@ QDBROWSER_INTROSPECTION_XML = """\
       <arg type="s" name="state" direction="out"/>
     </method>
 
+    <!-- History + Bookmarks (step 3) -->
+    <method name="HistorySearch">
+      <arg type="s" name="query" direction="in"/>
+      <arg type="u" name="limit" direction="in"/>
+      <arg type="a(sss)" name="results" direction="out"/>
+    </method>
+    <method name="BookmarksSearch">
+      <arg type="s" name="query" direction="in"/>
+      <arg type="u" name="limit" direction="in"/>
+      <arg type="a(ss)" name="results" direction="out"/>
+    </method>
+
     <!-- Outbound signals: emitted from window/downloads/media -->
     <signal name="TabAdded">
       <arg type="u" name="id"/>
@@ -135,12 +149,14 @@ QDBROWSER_INTROSPECTION_XML = """\
 # enforcement path is uniform; pkcheck returns success for unauth'd
 # actions on those.
 METHOD_TO_ACTION = {
-    "TabsList":      "org.qdistro.qdbrowser.tabs.list",
-    "TabsOpen":      "org.qdistro.qdbrowser.tabs.open",
-    "TabsClose":     "org.qdistro.qdbrowser.tabs.close",
-    "PageExtract":   "org.qdistro.qdbrowser.page.extract",
-    "DownloadsList": "org.qdistro.qdbrowser.downloads.list",
-    "MediaStatus":   "org.qdistro.qdbrowser.media.status",
+    "TabsList":         "org.qdistro.qdbrowser.tabs.list",
+    "TabsOpen":         "org.qdistro.qdbrowser.tabs.open",
+    "TabsClose":        "org.qdistro.qdbrowser.tabs.close",
+    "PageExtract":      "org.qdistro.qdbrowser.page.extract",
+    "DownloadsList":    "org.qdistro.qdbrowser.downloads.list",
+    "MediaStatus":      "org.qdistro.qdbrowser.media.status",
+    "HistorySearch":    "org.qdistro.qdbrowser.history.search",
+    "BookmarksSearch":  "org.qdistro.qdbrowser.bookmarks.search",
     # Cookies.export not yet wired into a method; the action is reserved
     # for the eventual handler.
 }
@@ -153,6 +169,8 @@ _OPEN_ACTIONS = {
     "org.qdistro.qdbrowser.tabs.list",
     "org.qdistro.qdbrowser.media.status",
     "org.qdistro.qdbrowser.downloads.list",
+    "org.qdistro.qdbrowser.history.search",
+    "org.qdistro.qdbrowser.bookmarks.search",
 }
 
 
@@ -371,6 +389,76 @@ class MediaProxy:
         self.state = state or "stopped"
 
 
+class HistoryProxy:
+    """Read-only view over the history plugin for bridge protocol ops.
+
+    Searches the history store and returns ``(url, title, timestamp)``
+    triples. The timestamp is ISO-8601 (string) so it survives D-Bus
+    without custom type marshalling.
+    """
+
+    def __init__(self, history_plugin):
+        self._plugin = history_plugin
+
+    def search(self, query: str, limit: int = 50
+               ) -> list[tuple[str, str, str]]:
+        plug = self._plugin
+        if plug is None:
+            return []
+        store = getattr(plug, "_store", None)
+        if store is None:
+            return []
+        q = query.lower().strip()
+        results: list[tuple[str, str, str]] = []
+        for rec in store.all():
+            if limit and len(results) >= limit:
+                break
+            url = rec.get("url", "")
+            title = rec.get("title", "")
+            ts = rec.get("ts", 0)
+            if q and q not in url.lower() and q not in title.lower():
+                continue
+            # Format timestamp as ISO-8601 string for D-Bus transport.
+            try:
+                ts_str = datetime.datetime.fromtimestamp(
+                    float(ts), tz=datetime.timezone.utc
+                ).isoformat()
+            except (ValueError, OSError, OverflowError):
+                ts_str = ""
+            results.append((url, title or "", ts_str))
+        return results
+
+
+class BookmarksProxy:
+    """Read-only view over the bookmarks plugin for bridge protocol ops.
+
+    Returns ``(url, title)`` pairs matching the query.
+    """
+
+    def __init__(self, bookmarks_plugin):
+        self._plugin = bookmarks_plugin
+
+    def search(self, query: str, limit: int = 50
+               ) -> list[tuple[str, str]]:
+        plug = self._plugin
+        if plug is None:
+            return []
+        panel = getattr(plug, "_panel", None)
+        if panel is None:
+            return []
+        q = query.lower().strip()
+        results: list[tuple[str, str]] = []
+        for b in panel.all():
+            if limit and len(results) >= limit:
+                break
+            url = b.get("url", "")
+            title = b.get("title", "")
+            if q and q not in url.lower() and q not in title.lower():
+                continue
+            results.append((url, title or ""))
+        return results
+
+
 # --------------------------------------------------------------------- #
 # Method dispatcher
 # --------------------------------------------------------------------- #
@@ -391,11 +479,15 @@ class BridgeAdapterHandlers:
 
     def __init__(self, tabs: TabsProxy, pages: PagesProxy,
                  downloads: DownloadsProxy, media: MediaProxy,
-                 polkit: Callable[[str, Optional[int]], bool] = polkit_check):
+                 polkit: Callable[[str, Optional[int]], bool] = polkit_check,
+                 history: Optional["HistoryProxy"] = None,
+                 bookmarks: Optional["BookmarksProxy"] = None):
         self.tabs = tabs
         self.pages = pages
         self.downloads = downloads
         self.media = media
+        self.history = history
+        self.bookmarks = bookmarks
         self._polkit = polkit
 
     def dispatch(self, method: str, args: tuple,
@@ -425,6 +517,18 @@ class BridgeAdapterHandlers:
             return ((self.downloads.list(),), "a(usu)")
         if method == "MediaStatus":
             return (self.media.status(), "sss")
+        if method == "HistorySearch":
+            query, limit = args
+            proxy = self.history
+            if proxy is None:
+                return (([],), "a(sss)")
+            return ((proxy.search(str(query), int(limit)),), "a(sss)")
+        if method == "BookmarksSearch":
+            query, limit = args
+            proxy = self.bookmarks
+            if proxy is None:
+                return (([],), "a(ss)")
+            return ((proxy.search(str(query), int(limit)),), "a(ss)")
         raise LookupError(f"unhandled method {method!r}")
 
 
@@ -498,7 +602,9 @@ class BridgeAdapterPlugin(Plugin):
         self.pages_proxy: Optional[PagesProxy] = None
         self.downloads_proxy: Optional[DownloadsProxy] = None
         self.media_proxy: Optional[MediaProxy] = None
-        self._signal_thread: Optional[threading.Thread] = None
+        self.history_proxy: Optional[HistoryProxy] = None
+        self.bookmarks_proxy: Optional[BookmarksProxy] = None
+        self._recv_thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
 
     @property
@@ -563,9 +669,31 @@ class BridgeAdapterPlugin(Plugin):
         self.pages_proxy = PagesProxy(app_controller, run_js=run_js)
         self.downloads_proxy = DownloadsProxy(downloads_plugin)
         self.media_proxy = MediaProxy()
+
+        # History + bookmarks proxies (step 3). These interface with
+        # the existing history and bookmarks plugins. If a plugin is
+        # not yet enabled (possible ordering edge) the proxy degrades
+        # to returning empty results.
+        history_plugin = None
+        try:
+            history_plugin = app_controller.plugins._instances.get(
+                "history")
+        except Exception:
+            pass
+        bookmarks_plugin = None
+        try:
+            bookmarks_plugin = app_controller.plugins._instances.get(
+                "bookmarks")
+        except Exception:
+            pass
+        self.history_proxy = HistoryProxy(history_plugin)
+        self.bookmarks_proxy = BookmarksProxy(bookmarks_plugin)
+
         self._handlers = BridgeAdapterHandlers(
             self.tabs_proxy, self.pages_proxy,
-            self.downloads_proxy, self.media_proxy)
+            self.downloads_proxy, self.media_proxy,
+            history=self.history_proxy,
+            bookmarks=self.bookmarks_proxy)
 
         # Claim a per-pid well-known name on the session bus. We do NOT
         # crash qdbrowser if the bus rejects us — the plugin degrades
@@ -585,6 +713,10 @@ class BridgeAdapterPlugin(Plugin):
             app_controller.webview_removed.connect(self._on_webview_removed)
         except Exception as exc:
             log.warning("could not connect window signals: %s", exc)
+
+        # Start the inbound D-Bus message receive loop. Runs in a
+        # dedicated daemon thread so it never blocks the Qt event loop.
+        self._start_recv_loop()
 
         self._active = True
         log.info("bridge_adapter active — bus=%s", self._bus_name)
@@ -613,6 +745,12 @@ class BridgeAdapterPlugin(Plugin):
                 except Exception:
                     pass
                 self._conn = None
+            # Wait for the receive thread to notice the stop event
+            # and exit. The thread checks _stop every 0.5 s and the
+            # socket close above unblocks any pending select().
+            if self._recv_thread is not None:
+                self._recv_thread.join(timeout=3.0)
+                self._recv_thread = None
             self._handlers = None
             self._bus_name = None
 
@@ -687,3 +825,137 @@ class BridgeAdapterPlugin(Plugin):
         except Exception:
             return
         self.emit_tab_removed(tid)
+
+    # -- inbound D-Bus receive loop ----
+
+    def _start_recv_loop(self) -> None:
+        """Spin up a daemon thread that blocks on the D-Bus connection fd
+        and dispatches inbound method calls to the handlers.
+
+        The thread uses ``select`` on the connection's socket fd with a
+        short timeout so it can check ``_stop`` periodically and exit
+        cleanly on deactivate.
+        """
+        if self._conn is None or self._handlers is None:
+            return
+        self._stop.clear()
+        t = threading.Thread(target=self._recv_loop, daemon=True,
+                             name="bridge_adapter_recv")
+        self._recv_thread = t
+        t.start()
+
+    def _recv_loop(self) -> None:
+        """Blocking receive loop — runs in a background thread."""
+        try:
+            from jeepney import (
+                MessageType, HeaderFields,
+                new_method_return, new_error,
+            )
+        except ImportError:
+            log.warning("jeepney not available; receive loop not started")
+            return
+
+        conn = self._conn
+        if conn is None:
+            return
+
+        while not self._stop.is_set():
+            try:
+                # Use select with a timeout so we can check _stop.
+                # conn.sock is the underlying socket object.
+                sock = getattr(conn, "sock", None)
+                if sock is None:
+                    break
+                ready, _, _ = select.select([sock], [], [], 0.5)
+                if not ready:
+                    continue
+                msg = conn.receive(timeout=2.0)
+            except (TimeoutError, OSError):
+                continue
+            except Exception as exc:
+                if self._stop.is_set():
+                    break
+                log.debug("recv_loop error: %s", exc)
+                continue
+
+            # Only handle method calls addressed to our interface.
+            if msg.header.message_type != MessageType.method_call:
+                continue
+
+            fields = msg.header.fields
+            iface = fields.get(HeaderFields.interface, "")
+            path = fields.get(HeaderFields.path, "")
+            member = fields.get(HeaderFields.member, "")
+
+            # Handle standard D-Bus introspection.
+            if (iface == "org.freedesktop.DBus.Introspectable"
+                    and member == "Introspect"):
+                reply = new_method_return(
+                    msg, "s", (QDBROWSER_INTROSPECTION_XML,))
+                try:
+                    conn.send(reply)
+                except Exception as exc:
+                    log.debug("send introspect reply failed: %s", exc)
+                continue
+
+            # Filter to our interface + path.
+            if iface != QDBROWSER_IFACE or path != QDBROWSER_PATH:
+                continue
+
+            # Resolve the caller's PID for polkit gating.
+            sender = fields.get(HeaderFields.sender)
+            caller_pid = self._resolve_sender_pid(sender)
+
+            # Dispatch.
+            try:
+                body, sig = self._handlers.dispatch(
+                    member, msg.body, caller_pid=caller_pid)
+                reply = new_method_return(msg, sig, body)
+            except PermissionError as exc:
+                reply = new_error(
+                    msg,
+                    "org.freedesktop.DBus.Error.AccessDenied",
+                    "s", (str(exc),))
+            except LookupError as exc:
+                reply = new_error(
+                    msg,
+                    "org.freedesktop.DBus.Error.UnknownMethod",
+                    "s", (str(exc),))
+            except Exception as exc:
+                log.warning("dispatch %s failed: %s", member, exc)
+                reply = new_error(
+                    msg,
+                    "org.freedesktop.DBus.Error.Failed",
+                    "s", (str(exc),))
+            try:
+                conn.send(reply)
+            except Exception as exc:
+                log.debug("send reply for %s failed: %s", member, exc)
+
+    def _resolve_sender_pid(self, sender: Optional[str]
+                            ) -> Optional[int]:
+        """Ask the bus daemon for the Unix PID of ``sender``.
+
+        Returns None on any failure (the polkit gate treats None as
+        'internal call' and skips the check — callers without a
+        resolvable PID still get the open-actions short-circuit).
+        """
+        if sender is None or self._conn is None:
+            return None
+        try:
+            from jeepney import DBusAddress, new_method_call
+            bus = DBusAddress(
+                "/org/freedesktop/DBus",
+                bus_name="org.freedesktop.DBus",
+                interface="org.freedesktop.DBus",
+            )
+            reply = self._conn.send_and_get_reply(
+                new_method_call(
+                    bus, "GetConnectionUnixProcessID",
+                    "s", (sender,)),
+                timeout=2.0)
+            if reply.body:
+                return int(reply.body[0])
+        except Exception as exc:
+            log.debug("could not resolve PID for %s: %s", sender, exc)
+        return None

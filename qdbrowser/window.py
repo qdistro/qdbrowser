@@ -209,6 +209,10 @@ class MainWindow(QMainWindow):
             # + tab id so the qdshell ClipboardGate sees them as
             # extra MIME types on selection_set.
             "clipboard",
+            # track-02: bridge adapter for qdistro daemon integration.
+            # The plugin itself handles graceful degradation when
+            # daemons are not present on the session bus.
+            "bridge_adapter",
         ]
         for name in always_on:
             try:

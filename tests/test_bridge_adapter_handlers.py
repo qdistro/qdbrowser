@@ -61,10 +61,47 @@ class _FakeMedia:
         return ("My Track", "An Artist", "playing")
 
 
-def _make_handlers(polkit_allow=True):
+class _FakeHistory:
+    def search(self, query, limit=50):
+        data = [
+            ("https://example.com", "Example", "2026-01-01T00:00:00+00:00"),
+            ("https://docs.example.com", "Docs", "2026-01-02T00:00:00+00:00"),
+            ("https://news.example.com", "News", "2026-01-03T00:00:00+00:00"),
+        ]
+        q = query.lower().strip()
+        out = []
+        for url, title, ts in data:
+            if q and q not in url.lower() and q not in title.lower():
+                continue
+            out.append((url, title, ts))
+            if limit and len(out) >= limit:
+                break
+        return out
+
+
+class _FakeBookmarks:
+    def search(self, query, limit=50):
+        data = [
+            ("https://saved.example.com", "Saved Page"),
+            ("https://blog.example.com", "My Blog"),
+        ]
+        q = query.lower().strip()
+        out = []
+        for url, title in data:
+            if q and q not in url.lower() and q not in title.lower():
+                continue
+            out.append((url, title))
+            if limit and len(out) >= limit:
+                break
+        return out
+
+
+def _make_handlers(polkit_allow=True, history=None, bookmarks=None):
     return ba.BridgeAdapterHandlers(
         _FakeTabs(), _FakePages(), _FakeDownloads(), _FakeMedia(),
         polkit=lambda action, pid: polkit_allow,
+        history=history,
+        bookmarks=bookmarks,
     )
 
 
@@ -76,7 +113,8 @@ def _make_handlers(polkit_allow=True):
 def test_introspection_xml_lists_all_methods():
     xml = ba.QDBROWSER_INTROSPECTION_XML
     for method in ("TabsList", "TabsOpen", "TabsClose",
-                   "PageExtract", "DownloadsList", "MediaStatus"):
+                   "PageExtract", "DownloadsList", "MediaStatus",
+                   "HistorySearch", "BookmarksSearch"):
         assert f'name="{method}"' in xml
     # Signal names must match the emit_* helpers.
     for sig in ("TabAdded", "TabRemoved",
@@ -87,7 +125,8 @@ def test_introspection_xml_lists_all_methods():
 def test_method_to_action_table_is_complete():
     # Every method we introspect must map to a polkit action.
     for method in ("TabsList", "TabsOpen", "TabsClose",
-                   "PageExtract", "DownloadsList", "MediaStatus"):
+                   "PageExtract", "DownloadsList", "MediaStatus",
+                   "HistorySearch", "BookmarksSearch"):
         assert method in ba.METHOD_TO_ACTION
 
 
@@ -338,3 +377,380 @@ def test_media_proxy_update_and_status():
     assert media.status() == ("", "", "stopped")
     media.update("Song", "Band", "playing")
     assert media.status() == ("Song", "Band", "playing")
+
+
+# --------------------------------------------------------------------- #
+# History + Bookmarks proxy and dispatch tests (step 3).
+# --------------------------------------------------------------------- #
+
+
+def test_history_search_dispatch_returns_correct_signature():
+    h = _make_handlers(history=_FakeHistory())
+    body, sig = h.dispatch("HistorySearch", ("example", 50))
+    assert sig == "a(sss)"
+    (results,) = body
+    assert len(results) == 3
+    # Each result is (url, title, timestamp).
+    assert results[0] == ("https://example.com", "Example",
+                          "2026-01-01T00:00:00+00:00")
+
+
+def test_history_search_filters_by_query():
+    h = _make_handlers(history=_FakeHistory())
+    body, _ = h.dispatch("HistorySearch", ("docs", 50))
+    (results,) = body
+    assert len(results) == 1
+    assert results[0][0] == "https://docs.example.com"
+
+
+def test_history_search_respects_limit():
+    h = _make_handlers(history=_FakeHistory())
+    body, _ = h.dispatch("HistorySearch", ("", 2))
+    (results,) = body
+    assert len(results) == 2
+
+
+def test_history_search_empty_when_no_proxy():
+    h = _make_handlers(history=None)
+    body, sig = h.dispatch("HistorySearch", ("test", 10))
+    assert sig == "a(sss)"
+    (results,) = body
+    assert results == []
+
+
+def test_bookmarks_search_dispatch_returns_correct_signature():
+    h = _make_handlers(bookmarks=_FakeBookmarks())
+    body, sig = h.dispatch("BookmarksSearch", ("", 50))
+    assert sig == "a(ss)"
+    (results,) = body
+    assert len(results) == 2
+    assert results[0] == ("https://saved.example.com", "Saved Page")
+
+
+def test_bookmarks_search_filters_by_query():
+    h = _make_handlers(bookmarks=_FakeBookmarks())
+    body, _ = h.dispatch("BookmarksSearch", ("blog", 50))
+    (results,) = body
+    assert len(results) == 1
+    assert results[0][0] == "https://blog.example.com"
+
+
+def test_bookmarks_search_respects_limit():
+    h = _make_handlers(bookmarks=_FakeBookmarks())
+    body, _ = h.dispatch("BookmarksSearch", ("", 1))
+    (results,) = body
+    assert len(results) == 1
+
+
+def test_bookmarks_search_empty_when_no_proxy():
+    h = _make_handlers(bookmarks=None)
+    body, sig = h.dispatch("BookmarksSearch", ("test", 10))
+    assert sig == "a(ss)"
+    (results,) = body
+    assert results == []
+
+
+# --------------------------------------------------------------------- #
+# HistoryProxy / BookmarksProxy duck-typed adapter tests.
+# --------------------------------------------------------------------- #
+
+
+class _FakeHistoryStore:
+    """Mimics the _Store class from history.py."""
+    def __init__(self, records):
+        self._records = records
+
+    def all(self):
+        return list(reversed(self._records))
+
+
+class _FakeHistoryPlugin:
+    def __init__(self, records):
+        self._store = _FakeHistoryStore(records)
+
+
+def test_history_proxy_search_matches_url_and_title():
+    records = [
+        {"url": "https://a.com", "title": "Alpha", "ts": 1700000000},
+        {"url": "https://b.com", "title": "Beta", "ts": 1700001000},
+        {"url": "https://c.com", "title": "Gamma", "ts": 1700002000},
+    ]
+    proxy = ba.HistoryProxy(_FakeHistoryPlugin(records))
+    # Search by URL substring.
+    results = proxy.search("b.com")
+    assert len(results) == 1
+    assert results[0][0] == "https://b.com"
+    # Search by title.
+    results = proxy.search("alpha")
+    assert len(results) == 1
+    assert results[0][1] == "Alpha"
+    # Empty query returns all.
+    results = proxy.search("")
+    assert len(results) == 3
+
+
+def test_history_proxy_formats_timestamp_as_iso():
+    records = [{"url": "https://x.com", "title": "X", "ts": 0}]
+    proxy = ba.HistoryProxy(_FakeHistoryPlugin(records))
+    results = proxy.search("")
+    assert len(results) == 1
+    # ts=0 is 1970-01-01T00:00:00+00:00
+    assert "1970" in results[0][2]
+
+
+def test_history_proxy_returns_empty_for_none_plugin():
+    proxy = ba.HistoryProxy(None)
+    assert proxy.search("test") == []
+
+
+def test_history_proxy_respects_limit():
+    records = [
+        {"url": f"https://{i}.com", "title": f"T{i}", "ts": i}
+        for i in range(10)
+    ]
+    proxy = ba.HistoryProxy(_FakeHistoryPlugin(records))
+    results = proxy.search("", limit=3)
+    assert len(results) == 3
+
+
+class _FakeBookmarksPanel:
+    def __init__(self, bookmarks):
+        self._bookmarks = bookmarks
+
+    def all(self):
+        return list(self._bookmarks)
+
+
+class _FakeBookmarksPlugin:
+    def __init__(self, bookmarks):
+        self._panel = _FakeBookmarksPanel(bookmarks)
+
+
+def test_bookmarks_proxy_search_matches_url_and_title():
+    bmarks = [
+        {"url": "https://x.com", "title": "Xray"},
+        {"url": "https://y.com", "title": "Yankee"},
+    ]
+    proxy = ba.BookmarksProxy(_FakeBookmarksPlugin(bmarks))
+    results = proxy.search("xray")
+    assert len(results) == 1
+    assert results[0] == ("https://x.com", "Xray")
+    # Empty query returns all.
+    results = proxy.search("")
+    assert len(results) == 2
+
+
+def test_bookmarks_proxy_returns_empty_for_none_plugin():
+    proxy = ba.BookmarksProxy(None)
+    assert proxy.search("test") == []
+
+
+def test_bookmarks_proxy_respects_limit():
+    bmarks = [{"url": f"https://{i}.com", "title": f"B{i}"}
+              for i in range(10)]
+    proxy = ba.BookmarksProxy(_FakeBookmarksPlugin(bmarks))
+    results = proxy.search("", limit=4)
+    assert len(results) == 4
+
+
+# --------------------------------------------------------------------- #
+# Polkit: history + bookmarks are read-only (short-circuit).
+# --------------------------------------------------------------------- #
+
+
+def test_polkit_check_short_circuits_history_and_bookmarks():
+    assert ba.polkit_check(
+        "org.qdistro.qdbrowser.history.search", 1) is True
+    assert ba.polkit_check(
+        "org.qdistro.qdbrowser.bookmarks.search", 1) is True
+
+
+# --------------------------------------------------------------------- #
+# Receive loop unit tests (mock-level, no real bus).
+# --------------------------------------------------------------------- #
+
+
+def test_recv_loop_dispatches_method_call(monkeypatch):
+    """Verify _recv_loop routes a method_call message to the handlers
+    and sends the reply, using mock objects for jeepney."""
+    import types
+
+    plugin = ba.BridgeAdapterPlugin()
+    plugin._active = True
+    plugin._bus_name = "org.qdistro.QdBrowser.pid1"
+
+    # Build handlers with fakes.
+    plugin._handlers = _make_handlers(history=_FakeHistory(),
+                                      bookmarks=_FakeBookmarks())
+    plugin._stop = __import__("threading").Event()
+
+    # Build a fake message and a fake connection.
+    from unittest.mock import MagicMock
+
+    fake_msg = MagicMock()
+    fake_msg.header.message_type = MagicMock()
+    fake_msg.header.message_type.__eq__ = lambda self, other: (
+        str(other) == "MessageType.method_call")
+    fake_msg.header.serial = 42
+    fake_msg.header.fields = {
+        2: ba.QDBROWSER_IFACE,   # HeaderFields.interface
+        1: ba.QDBROWSER_PATH,    # HeaderFields.path
+        3: "TabsList",           # HeaderFields.member
+        7: ":1.100",             # HeaderFields.sender
+    }
+    fake_msg.body = ()
+
+    call_count = 0
+    sent_replies = []
+
+    class FakeConn:
+        sock = MagicMock()
+
+        def receive(self, timeout=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return fake_msg
+            # After first message, signal stop.
+            plugin._stop.set()
+            raise TimeoutError
+
+        def send(self, msg):
+            sent_replies.append(msg)
+
+        def send_and_get_reply(self, msg, timeout=None):
+            # For GetConnectionUnixProcessID — return a fake PID.
+            result = MagicMock()
+            result.body = (1234,)
+            return result
+
+    plugin._conn = FakeConn()
+
+    # Monkeypatch jeepney imports used by _recv_loop.
+    # We need the real MessageType/HeaderFields enums to match.
+    from jeepney import MessageType, HeaderFields
+    fake_msg.header.message_type = MessageType.method_call
+    fake_msg.header.fields = {
+        HeaderFields.interface: ba.QDBROWSER_IFACE,
+        HeaderFields.path: ba.QDBROWSER_PATH,
+        HeaderFields.member: "TabsList",
+        HeaderFields.sender: ":1.100",
+    }
+
+    # Monkeypatch select to always say "ready".
+    monkeypatch.setattr(ba.select, "select",
+                        lambda r, w, x, t: (r, w, x))
+
+    # Run the recv loop (it will process one message then stop).
+    plugin._recv_loop()
+
+    assert len(sent_replies) == 1
+    # The reply should be a method_return (we can check it was constructed).
+    reply = sent_replies[0]
+    assert reply.header.message_type == MessageType.method_return
+
+
+def test_recv_loop_returns_error_for_unknown_method(monkeypatch):
+    """Verify _recv_loop sends an error reply for unknown methods."""
+    plugin = ba.BridgeAdapterPlugin()
+    plugin._active = True
+    plugin._bus_name = "org.qdistro.QdBrowser.pid1"
+    plugin._handlers = _make_handlers()
+    plugin._stop = __import__("threading").Event()
+
+    from unittest.mock import MagicMock
+    from jeepney import MessageType, HeaderFields
+
+    fake_msg = MagicMock()
+    fake_msg.header.message_type = MessageType.method_call
+    fake_msg.header.serial = 99
+    fake_msg.header.fields = {
+        HeaderFields.interface: ba.QDBROWSER_IFACE,
+        HeaderFields.path: ba.QDBROWSER_PATH,
+        HeaderFields.member: "NoSuchMethod",
+        HeaderFields.sender: ":1.200",
+    }
+    fake_msg.body = ()
+
+    call_count = 0
+    sent_replies = []
+
+    class FakeConn:
+        sock = MagicMock()
+
+        def receive(self, timeout=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return fake_msg
+            plugin._stop.set()
+            raise TimeoutError
+
+        def send(self, msg):
+            sent_replies.append(msg)
+
+        def send_and_get_reply(self, msg, timeout=None):
+            result = MagicMock()
+            result.body = (5678,)
+            return result
+
+    plugin._conn = FakeConn()
+    monkeypatch.setattr(ba.select, "select",
+                        lambda r, w, x, t: (r, w, x))
+
+    plugin._recv_loop()
+
+    assert len(sent_replies) == 1
+    reply = sent_replies[0]
+    assert reply.header.message_type == MessageType.error
+
+
+def test_recv_loop_handles_introspect(monkeypatch):
+    """Verify _recv_loop responds to Introspect with the XML."""
+    plugin = ba.BridgeAdapterPlugin()
+    plugin._active = True
+    plugin._bus_name = "org.qdistro.QdBrowser.pid1"
+    plugin._handlers = _make_handlers()
+    plugin._stop = __import__("threading").Event()
+
+    from unittest.mock import MagicMock
+    from jeepney import MessageType, HeaderFields
+
+    fake_msg = MagicMock()
+    fake_msg.header.message_type = MessageType.method_call
+    fake_msg.header.serial = 10
+    fake_msg.header.fields = {
+        HeaderFields.interface: "org.freedesktop.DBus.Introspectable",
+        HeaderFields.path: ba.QDBROWSER_PATH,
+        HeaderFields.member: "Introspect",
+        HeaderFields.sender: ":1.300",
+    }
+    fake_msg.body = ()
+
+    call_count = 0
+    sent_replies = []
+
+    class FakeConn:
+        sock = MagicMock()
+
+        def receive(self, timeout=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return fake_msg
+            plugin._stop.set()
+            raise TimeoutError
+
+        def send(self, msg):
+            sent_replies.append(msg)
+
+    plugin._conn = FakeConn()
+    monkeypatch.setattr(ba.select, "select",
+                        lambda r, w, x, t: (r, w, x))
+
+    plugin._recv_loop()
+
+    assert len(sent_replies) == 1
+    reply = sent_replies[0]
+    assert reply.header.message_type == MessageType.method_return
+    assert ba.QDBROWSER_INTROSPECTION_XML in reply.body
