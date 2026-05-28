@@ -126,6 +126,9 @@ class ClipboardOriginPlugin(PageObserver):
         # Phase-3: cached DOM metadata per view, populated by the JS
         # callback reading window.__qdistro_clipboard_meta.
         self._dom_meta_by_view: dict = {}  # id(webview) -> dict|None
+        # Generation counter per view: incremented on navigation/load
+        # so stale async JS callbacks don't overwrite cleared metadata.
+        self._meta_gen_by_view: dict = {}  # id(webview) -> int
 
     # -- lifecycle ------------------------------------------------------
 
@@ -162,6 +165,7 @@ class ClipboardOriginPlugin(PageObserver):
         self._wired_views.clear()
         self._last_url_by_view.clear()
         self._dom_meta_by_view.clear()
+        self._meta_gen_by_view.clear()
 
     # -- page observer hooks --------------------------------------------
 
@@ -171,12 +175,16 @@ class ClipboardOriginPlugin(PageObserver):
         # Invalidate stale DOM metadata from the previous page so a
         # copy on the new page doesn't inherit the old page's tags.
         self._dom_meta_by_view.pop(vid, None)
+        # Bump generation so any in-flight async JS callback from the
+        # previous page is discarded when it arrives.
+        self._meta_gen_by_view[vid] = self._meta_gen_by_view.get(vid, 0) + 1
         self._wire_view(webview)
 
     def on_load_finished(self, webview, ok):
         vid = id(webview)
         # Clear stale metadata on every load (success or failure).
         self._dom_meta_by_view.pop(vid, None)
+        self._meta_gen_by_view[vid] = self._meta_gen_by_view.get(vid, 0) + 1
         self._wire_view(webview)
         if ok:
             self._inject_selectionchange_handler(webview)
@@ -216,14 +224,25 @@ class ClipboardOriginPlugin(PageObserver):
         and caches the result. By the time the user presses Ctrl+C,
         the cache is warm and ``_on_clipboard_changed`` reads it
         synchronously.
+
+        Captures the current generation counter so stale callbacks
+        from a previous page are silently dropped.
         """
+        gen = self._meta_gen_by_view.get(vid, 0)
         self._read_dom_meta(
             webview,
-            lambda meta, _vid=vid: self._cache_dom_meta(_vid, meta),
+            lambda meta, _vid=vid, _gen=gen: self._cache_dom_meta(_vid, meta, _gen),
         )
 
-    def _cache_dom_meta(self, vid, meta):
-        """Store the JS-reported DOM metadata for ``vid``."""
+    def _cache_dom_meta(self, vid, meta, gen):
+        """Store the JS-reported DOM metadata for ``vid``.
+
+        Only writes if ``gen`` matches the current generation for
+        ``vid``, preventing stale async callbacks from overwriting
+        metadata that was cleared by a navigation or load event.
+        """
+        if self._meta_gen_by_view.get(vid, 0) != gen:
+            return  # stale callback; discard
         self._dom_meta_by_view[vid] = meta
 
     def _inject_selectionchange_handler(self, webview):

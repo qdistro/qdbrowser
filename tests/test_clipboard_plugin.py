@@ -167,13 +167,36 @@ class TestDomMetaCaching:
         plug = ClipboardOriginPlugin()
         meta = {"isPasswordField": True, "isCodeBlock": False,
                 "isContentEditable": False}
-        plug._cache_dom_meta(42, meta)
+        plug._cache_dom_meta(42, meta, 0)
         assert plug._dom_meta_by_view[42] == meta
 
     def test_cache_dom_meta_stores_none(self):
         plug = ClipboardOriginPlugin()
-        plug._cache_dom_meta(42, None)
+        plug._cache_dom_meta(42, None, 0)
         assert plug._dom_meta_by_view[42] is None
+
+    def test_cache_dom_meta_rejects_stale_generation(self):
+        """A callback with an old generation must not overwrite metadata
+        cleared by a navigation event."""
+        plug = ClipboardOriginPlugin()
+        vid = 42
+        # Simulate: gen 0 callback arrives, writes metadata.
+        plug._cache_dom_meta(vid, {"isPasswordField": True}, 0)
+        assert plug._dom_meta_by_view[vid] == {"isPasswordField": True}
+        # Navigation bumps generation to 1 and clears metadata.
+        plug._meta_gen_by_view[vid] = 1
+        plug._dom_meta_by_view.pop(vid, None)
+        # A stale gen-0 callback arrives -- must be discarded.
+        plug._cache_dom_meta(vid, {"isPasswordField": True}, 0)
+        assert vid not in plug._dom_meta_by_view
+
+    def test_cache_dom_meta_accepts_current_generation(self):
+        """A callback with the current generation should write."""
+        plug = ClipboardOriginPlugin()
+        vid = 42
+        plug._meta_gen_by_view[vid] = 3
+        plug._cache_dom_meta(vid, {"isCodeBlock": True}, 3)
+        assert plug._dom_meta_by_view[vid] == {"isCodeBlock": True}
 
     def test_on_selection_changed_triggers_js_read(self):
         plug = ClipboardOriginPlugin()
@@ -416,4 +439,39 @@ class TestStaleMetadataClearing:
         vid = id(wv)
         plug._dom_meta_by_view[vid] = {"isContentEditable": True}
         plug.on_load_finished(wv, False)
+        assert vid not in plug._dom_meta_by_view
+
+    def test_on_navigation_bumps_generation(self):
+        plug = ClipboardOriginPlugin()
+        wv = _make_mock_webview()
+        vid = id(wv)
+        assert plug._meta_gen_by_view.get(vid, 0) == 0
+        plug.on_navigation(wv, "https://a.com")
+        assert plug._meta_gen_by_view[vid] == 1
+        plug.on_navigation(wv, "https://b.com")
+        assert plug._meta_gen_by_view[vid] == 2
+
+    def test_on_load_finished_bumps_generation(self):
+        plug = ClipboardOriginPlugin()
+        wv = _make_mock_webview()
+        vid = id(wv)
+        plug.on_load_finished(wv, True)
+        gen1 = plug._meta_gen_by_view[vid]
+        plug.on_load_finished(wv, True)
+        assert plug._meta_gen_by_view[vid] == gen1 + 1
+
+    def test_stale_callback_after_navigation_is_discarded(self):
+        """End-to-end: simulate a stale callback arriving after navigation."""
+        plug = ClipboardOriginPlugin()
+        wv = _make_mock_webview()
+        vid = id(wv)
+        # Pre-navigation: cache some metadata at gen 0.
+        plug._cache_dom_meta(vid, {"isPasswordField": True}, 0)
+        assert plug._dom_meta_by_view.get(vid) == {"isPasswordField": True}
+        # Navigation clears metadata and bumps gen.
+        plug.on_navigation(wv, "https://safe.com")
+        assert vid not in plug._dom_meta_by_view
+        # Stale callback from gen 0 arrives.
+        plug._cache_dom_meta(vid, {"isPasswordField": True}, 0)
+        # Must still be empty -- stale callback was rejected.
         assert vid not in plug._dom_meta_by_view
