@@ -305,6 +305,65 @@ def test_release_uses_pkcheck_when_authorized_arg_none(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# delete
+# ---------------------------------------------------------------------------
+
+
+def test_delete_removes_file_sidecar_and_row(tmp_path):
+    store, qpath, row_id = _setup_release(tmp_path)
+    sidecar = store.write_sidecar(row_id, qpath, {"source_url": "x"})
+    assert os.path.exists(qpath)
+    assert os.path.exists(sidecar)
+
+    assert store.delete(row_id) is True
+    assert not os.path.exists(qpath)
+    assert not os.path.exists(sidecar)
+    assert store.get(row_id) is None
+    store.close()
+
+
+def test_delete_unknown_id_returns_false(tmp_path):
+    store = _make_store(tmp_path)
+    assert store.delete(9999) is False
+    store.close()
+
+
+def test_delete_drops_row_even_if_file_missing(tmp_path):
+    store, qpath, row_id = _setup_release(tmp_path)
+    os.remove(qpath)  # file already gone
+    assert store.delete(row_id) is True
+    assert store.get(row_id) is None
+    store.close()
+
+
+def test_delete_confined_to_quarantine_dir(tmp_path):
+    """A forged row whose quarantine_path escapes the quarantine dir must
+    not let delete() unlink an arbitrary user file; the row is still
+    dropped but the outside file is untouched."""
+    store = _make_store(tmp_path)
+    victim = tmp_path / "important.txt"
+    victim.write_text("do not delete me")
+    row_id = store.record(quarantine_path=str(victim), filename="x",
+                          source_url="https://x", scan_result="clean")
+    assert store.delete(row_id) is True
+    assert victim.exists()                  # NOT deleted
+    assert store.get(row_id) is None        # row gone
+    store.close()
+
+
+def test_delete_keeps_row_when_unlink_fails(tmp_path, monkeypatch):
+    store, qpath, row_id = _setup_release(tmp_path)
+
+    def _boom(path):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(os, "remove", _boom)
+    assert store.delete(row_id) is False
+    assert store.get(row_id) is not None    # row kept, not orphaned
+    store.close()
+
+
+# ---------------------------------------------------------------------------
 # _sanitize_name
 # ---------------------------------------------------------------------------
 

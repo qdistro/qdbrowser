@@ -205,6 +205,7 @@ class MainWindow(QMainWindow):
             "sessions", "workspaces", "screenshot", "tab_stacks",
             "reader_mode", "mouse_gestures", "web_panels",
             "dark_mode", "picture_in_picture", "tab_list", "translate",
+            "quarantine_panel",
             # track-04 Phase-1: tag clipboard writes with origin URL
             # + tab id so the qdshell ClipboardGate sees them as
             # extra MIME types on selection_set.

@@ -213,6 +213,56 @@ class QuarantineStore:
         log.info("qdbrowser.quarantine release id=%s path=%s",
                  row_id, release_path)
 
+    def delete(self, row_id: int) -> bool:
+        """Delete a quarantined download: remove the file on disk (and
+        its sidecar) and drop the metadata row.
+
+        Returns True if the row was found and removed, False if the id
+        was unknown or the on-disk file could not be unlinked (in which
+        case the DB row is kept so the file is not orphaned silently).
+
+        Defence-in-depth: the stored ``quarantine_path`` is confined to
+        the quarantine directory before any ``os.remove`` — a forged or
+        corrupt row (absolute path, ``../`` traversal) must not let the
+        UI unlink arbitrary files. A path that escapes the quarantine
+        dir is treated as "no file to remove" and the row is still
+        dropped.
+        """
+        row = self.get(row_id)
+        if not row:
+            log.warning("delete: unknown id=%s", row_id)
+            return False
+        q_path = row.get("quarantine_path")
+        if q_path and self._within_dir(q_path):
+            for path in (q_path, q_path + ".qdistro-meta.json"):
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    log.warning("delete: could not remove %s: %s", path, exc)
+                    # Keep the row so the orphaned file stays visible in
+                    # the queue rather than vanishing from the UI.
+                    return False
+        elif q_path:
+            log.warning("delete: quarantine_path %r escapes %r, skipping "
+                        "file unlink", q_path, self._dir)
+        self._db.execute("DELETE FROM downloads WHERE id=?", (row_id,))
+        self._db.commit()
+        log.info("qdbrowser.quarantine delete id=%s path=%s", row_id, q_path)
+        return True
+
+    def _within_dir(self, path: str) -> bool:
+        """True if ``path`` resolves to a location inside the quarantine
+        directory. Uses ``realpath`` so symlinks cannot redirect the
+        unlink outside the dir."""
+        try:
+            root = os.path.realpath(self._dir)
+            target = os.path.realpath(path)
+        except OSError:
+            return False
+        return target == root or target.startswith(root + os.sep)
+
     # -- queries ------------------------------------------------------
 
     def list_pending(self) -> list:
@@ -320,6 +370,27 @@ def release(store: QuarantineStore,
     if row.get("scan_result") == "bad":
         log.warning("release: refusing bad file id=%s", row_id)
         return None
+    # 'pending' means the download hasn't finished / been scanned yet —
+    # the file may still be partial. Don't let it out of quarantine
+    # until intake completes ('clean', 'skipped', or scanner 'error').
+    if row.get("scan_result") == "pending":
+        log.warning("release: refusing still-pending file id=%s", row_id)
+        return None
+    src = row["quarantine_path"]
+    # Defence-in-depth: the source path must be inside the quarantine
+    # directory. A forged/corrupt row must not let release() move an
+    # arbitrary file (e.g. ~/.ssh/id_rsa) into the chosen target dir.
+    if not store._within_dir(src):
+        log.warning("release: quarantine_path %r escapes %r, refusing",
+                    src, store.directory)
+        return None
+    # Release moves exactly one quarantined file. Reject anything that
+    # isn't a regular file (directory, symlink, missing) so a forged row
+    # pointing at the quarantine root/a subdir can't release a whole tree
+    # — including bad/pending files — on a single approval.
+    if not os.path.isfile(src) or os.path.islink(src):
+        log.warning("release: %r is not a regular file, refusing", src)
+        return None
     if authorized is None:
         authorized = check_release_authorized()
     if not authorized:
@@ -327,7 +398,6 @@ def release(store: QuarantineStore,
             "qdbrowser.quarantine release_denied id=%s reason=polkit",
             row_id)
         return None
-    src = row["quarantine_path"]
     os.makedirs(release_dir, exist_ok=True)
     # Defence-in-depth: re-sanitize the stored filename so legacy or
     # manually-inserted rows cannot escape release_dir via path
