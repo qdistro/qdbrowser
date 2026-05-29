@@ -33,6 +33,124 @@ from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 _PROFILES: dict = {}
 
+
+# --- §6 User-agent: single source of truth --------------------------------
+#
+# Fingerprinting / silo-distinguishing risk: if every QWebEngineProfile
+# computed its own User-Agent (or a page were allowed to drift it), pages
+# could tell qdbrowser silos apart. We therefore resolve ONE UA string from
+# config (``[general] user_agent``) and apply the identical value to every
+# profile we mint via ``apply_user_agent`` (called from ``get_profile``).
+#
+# Accepted ``user_agent`` values:
+#   ""        -> Qt/Chromium default (we leave the profile UA untouched;
+#                Qt computes the same default for every profile in one build,
+#                so this is already consistent).
+#   "firefox" -> conservative Firefox preset.
+#   "chrome"  -> conservative Chrome preset.
+#   "edge"    -> conservative Edge preset.
+#   <other>   -> taken verbatim as a custom UA (single source of truth, still
+#                applied identically to every profile so there is no drift).
+#
+# The preset strings deliberately contain the tokens that
+# security_interceptor's strict UA baseline accepts (``Firefox/``,
+# ``Chrome/``, ``Edg/``) so a pinned preset is never self-rejected.
+
+_UA_PRESETS = {
+    "firefox": (
+        "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) "
+        "Gecko/20100101 Firefox/128.0"
+    ),
+    "chrome": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    ),
+    "edge": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0"
+    ),
+}
+
+
+def resolve_user_agent(config=None) -> Optional[str]:
+    """Resolve the single configured User-Agent string, or ``None`` to mean
+    "use the Qt/Chromium default" (consistent across profiles in one build).
+
+    ``config`` may be a ``Config`` instance; when ``None`` the singleton is
+    used. The lookup is ``[general] user_agent``. A preset name maps to a
+    canned UA; any other non-empty value is returned verbatim.
+
+    NOTE on interaction with ``[security] user_agent_policy="strict"``:
+    the strict-mode validator in ``security_interceptor`` only tolerates
+    UAs containing a token from its conservative baseline (``Firefox/``,
+    ``Chrome/``, ``Edg/``, ``QtWebEngine``, ``Safari/``). The three
+    presets here are deliberately built to contain those tokens. A
+    *custom* UA that contains none of them is therefore incompatible with
+    strict mode (its own requests would be blocked) — administrators must
+    keep custom UAs inside the strict baseline or leave the policy at
+    ``"default"``.
+    """
+    if config is None:
+        from qdbrowser.config import Config
+        config = Config()
+    raw = config.get("general", "user_agent", default="")
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    preset = _UA_PRESETS.get(value.lower())
+    if preset is not None:
+        return preset
+    return value
+
+
+def apply_user_agent(profile, config=None) -> None:
+    """Enforce the single source-of-truth UA on ``profile``.
+
+    When a UA is configured the *same* string is pinned on every profile.
+    When the resolved UA is ``None`` (Qt default), we explicitly set the
+    empty string, which Qt interprets as "use the default UA" — this
+    makes the enforcement authoritative in BOTH directions: reverting
+    ``[general] user_agent`` to ``""`` re-pins a previously-customised
+    profile back to the (consistent) Qt default rather than leaving it
+    stale.
+    """
+    ua = resolve_user_agent(config)
+    try:
+        # Empty string -> Qt restores its built-in default UA, which is
+        # identical for every profile in a single build, so this keeps
+        # all profiles consistent.
+        profile.setHttpUserAgent(ua or "")
+    except Exception:
+        # A missing setter on an exotic PyQt6 build must not break startup.
+        pass
+
+
+def pin_all_profiles(config=None) -> None:
+    """Re-enforce the single source-of-truth UA on every profile that exists.
+
+    Covers (a) every profile in our cache and (b) Qt's own
+    ``defaultProfile()`` — which is constructed by Qt outside
+    ``get_profile`` and would otherwise drift from qdbrowser profiles.
+    Idempotent; safe to call at startup and again whenever
+    ``[general] user_agent`` changes at runtime (including a revert to the
+    Qt default). Enforces in both directions, so it never leaves a
+    previously-pinned profile stale.
+    """
+    seen = set()
+    for prof in list(_PROFILES.values()):
+        if id(prof) in seen:
+            continue
+        seen.add(id(prof))
+        apply_user_agent(prof, config)
+    try:
+        default = QWebEngineProfile.defaultProfile()
+        if default is not None and id(default) not in seen:
+            apply_user_agent(default, config)
+    except Exception:
+        pass
+
 # Subscribers (plain Python callables) for "a new profile was created"
 # events. Used by downloads.py to wire ``downloadRequested`` on every
 # profile we mint, without monkey-patching ``get_profile``.
@@ -103,6 +221,9 @@ def get_profile(name: str = "default") -> QWebEngineProfile:
         prof.setHttpCacheType(QWebEngineProfile.HttpCacheType.DiskHttpCache)
         prof.setPersistentCookiesPolicy(
             QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies)
+    # §6: pin the single source-of-truth UA on every profile (default,
+    # named, and private) so silos can't be distinguished by UA drift.
+    apply_user_agent(prof)
     _PROFILES[name] = prof
     _notify_profile_created(prof)
     return prof
