@@ -422,10 +422,12 @@ _DL_STATE_TO_WIRE = {
 
 # qdbrowser is not a third-party browser launched by an RPM binary, so
 # the daemons' browser_bridge_allowed gate (which checks for the native-
-# messaging host's exe + parent browser) does not apply to it. The
-# daemon distinguishes qdbrowser by this parent_exe marker; the daemon
-# side resolves the caller uid from SO_PEERCRED regardless, so this is
-# advisory only.
+# messaging host's exe + an allowlisted parent browser) does NOT pass for
+# it: until the daemon side grows an explicit qdbrowser allowance, these
+# forwards are rejected with `parent_not_allowed` (fail-closed). The
+# marker is advisory only — the daemon always resolves the caller uid
+# from SO_PEERCRED, never from the body — and is carried so the eventual
+# daemon-side allowance can recognise a qdbrowser caller for audit.
 _QDBROWSER_MARKER = "qdbrowser"
 
 
