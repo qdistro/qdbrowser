@@ -24,6 +24,7 @@ implementing them locally.
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import os
 import select
@@ -50,7 +51,10 @@ _UNSET = object()
 # rename has landed across the tree, so no legacy alias is kept here.
 _DAEMON_NAMES = (
     "org.qdistro.Browser1",
-    "org.qdistro.Downloads1",
+    "org.qdistro.Downloads",
+    "org.qdistro.Mpris",
+    "org.qdistro.Notifications",
+    "org.qdistro.Compositor",
     "org.qdistro.Pwd1",
 )
 _SYSTEM_DAEMON_NAMES = (
@@ -392,6 +396,141 @@ class MediaProxy:
         self.state = state or "stopped"
 
 
+# --------------------------------------------------------------------- #
+# Outbound forwarder — Track 02 step 4 (Downloads + MPRIS)
+# --------------------------------------------------------------------- #
+
+# The Phase-9e SESSION-bus daemons qdbrowser forwards to. Same bus
+# names + interfaces the WebExtension native bridge calls
+# (qdistro/browser_daemons/), so qdbrowser participates in the exact
+# same desktop-integration surface with no extension hop.
+_DOWNLOADS_DAEMON = ("org.qdistro.Downloads", "/org/qdistro/Downloads",
+                     "org.qdistro.Downloads1", "Notify")
+_MPRIS_DAEMON = ("org.qdistro.Mpris", "/org/qdistro/Mpris",
+                 "org.qdistro.Mpris1", "Publish")
+
+# Map qdbrowser's QWebEngineDownloadRequest state ints to the
+# chrome.downloads state strings the Downloads daemon expects (its
+# handle_notify only surfaces UI on a terminal "complete").
+_DL_STATE_TO_WIRE = {
+    0: "in_progress",   # requested
+    1: "in_progress",   # downloading
+    2: "complete",      # completed
+    3: "interrupted",   # cancelled
+    4: "interrupted",   # interrupted
+}
+
+# qdbrowser is not a third-party browser launched by an RPM binary, so
+# the daemons' browser_bridge_allowed gate (which checks for the native-
+# messaging host's exe + parent browser) does not apply to it. The
+# daemon distinguishes qdbrowser by this parent_exe marker; the daemon
+# side resolves the caller uid from SO_PEERCRED regardless, so this is
+# advisory only.
+_QDBROWSER_MARKER = "qdbrowser"
+
+
+class DaemonForwarder:
+    """Forwards qdbrowser downloads + media to the Phase-9e daemons.
+
+    Pure D-Bus call surface: the actual ``call(bus, service, path,
+    interface, method, body)`` is injected so the forwarding logic
+    (field mapping, state translation, fire-and-forget error handling)
+    unit-tests without a session bus — the same injectable-client
+    pattern the bridge uses for ``_dbus_client``.
+
+    A ``None`` caller (default) binds a jeepney-backed client lazily.
+    Every call is best-effort: a missing daemon / bus error is swallowed
+    (logged) so a transient daemon outage never breaks a download.
+    """
+
+    def __init__(self, call: Optional[Callable[..., dict]] = None):
+        self._call = call
+
+    def _client(self) -> Callable[..., dict]:
+        if self._call is not None:
+            return self._call
+        self._call = _jeepney_session_call
+        return self._call
+
+    def notify_download(self, download_id: int, filename: str,
+                        state: int, *, url: str = "", mime: str = "",
+                        total_bytes: int = 0,
+                        bytes_received: int = 0) -> dict:
+        """Forward a download state change to ``org.qdistro.Downloads``.
+
+        ``state`` is the qdbrowser/QWebEngine state int; it is translated
+        to the daemon's wire-state string. Returns the daemon reply dict
+        (or an ``{"ok": False, ...}`` envelope on a transport error)."""
+        body = {
+            "download_id": int(download_id),
+            "filename": str(filename or ""),
+            "state": _DL_STATE_TO_WIRE.get(int(state), "in_progress"),
+            "url": str(url or ""),
+            "mime": str(mime or ""),
+            "total_bytes": int(total_bytes or 0),
+            "bytes_received": int(bytes_received or 0),
+            "parent_exe": _QDBROWSER_MARKER,
+            "extension_id": _QDBROWSER_MARKER,
+        }
+        return self._forward(_DOWNLOADS_DAEMON, body)
+
+    def publish_media(self, *, title: str = "", artist: str = "",
+                      album: str = "", state: str = "stopped",
+                      position_us: int = 0,
+                      tab_id: Optional[int] = None) -> dict:
+        """Forward a media snapshot to ``org.qdistro.Mpris`` so the admin
+        media widget shows qdbrowser playback alongside Firefox/Chrome."""
+        body = {
+            "title": str(title or ""),
+            "artist": str(artist or ""),
+            "album": str(album or ""),
+            "playback_status": str(state or "stopped"),
+            "position_us": int(position_us or 0),
+            "tab_id": tab_id,
+            "parent_exe": _QDBROWSER_MARKER,
+            "extension_id": _QDBROWSER_MARKER,
+        }
+        return self._forward(_MPRIS_DAEMON, body)
+
+    def _forward(self, daemon: tuple, body: dict) -> dict:
+        service, path, interface, method = daemon
+        try:
+            return self._client()(
+                "SESSION", service, path, interface, method,
+                json.dumps(body))
+        except Exception as exc:  # noqa: BLE001 — never break on a daemon outage
+            log.warning("daemon forward to %s.%s failed: %s",
+                        service, method, exc)
+            return {"ok": False, "error": "forward_failed",
+                    "detail": str(exc)[:200]}
+
+
+def _jeepney_session_call(bus: str, service: str, path: str,
+                          interface: str, method: str,
+                          body_json: str) -> dict:  # pragma: no cover
+    """Default jeepney-backed SESSION-bus call. Mirrors the bridge's
+    _JeepneyDBusClient.call: send one string arg, decode the JSON reply.
+    """
+    from jeepney import DBusAddress, new_method_call
+    from jeepney.io.blocking import open_dbus_connection
+    addr = DBusAddress(path, bus_name=service, interface=interface)
+    msg = new_method_call(addr, method, "s", (body_json,))
+    conn = open_dbus_connection(bus=bus)
+    try:
+        reply = conn.send_and_get_reply(msg, timeout=5.0)
+    finally:
+        conn.close()
+    if reply.header.message_type.name == "ERROR":
+        return {"ok": False, "error": "dbus_error",
+                "detail": str(reply.body)[:200]}
+    if reply.body and isinstance(reply.body[0], str):
+        try:
+            return json.loads(reply.body[0])
+        except ValueError:
+            return {"ok": True, "raw": reply.body[0]}
+    return {"ok": True, "body": list(reply.body)}
+
+
 class HistoryProxy:
     """Read-only view over the history plugin for bridge protocol ops.
 
@@ -706,6 +845,8 @@ class BridgeAdapterPlugin(Plugin):
         self.media_proxy: Optional[MediaProxy] = None
         self.history_proxy: Optional[HistoryProxy] = None
         self.bookmarks_proxy: Optional[BookmarksProxy] = None
+        # Step-4 outbound forwarder to the Phase-9e Downloads/MPRIS daemons.
+        self.forwarder: Optional[DaemonForwarder] = None
         self._recv_thread: Optional[threading.Thread] = None
         self._dispatch_helper = _DispatchHelper()
         self._stop = threading.Event()
@@ -731,12 +872,31 @@ class BridgeAdapterPlugin(Plugin):
     def emit_tab_removed(self, tab_id: int) -> None:
         self._emit_signal("TabRemoved", (int(tab_id),), "u")
 
-    def emit_download_started(self, download_id: int, filename: str) -> None:
+    def emit_download_started(self, download_id: int, filename: str,
+                              state: int = 0, **kw) -> None:
         self._emit_signal(
             "DownloadStarted", (int(download_id), str(filename)), "us")
+        # Step-4: also forward to the Downloads daemon so the admin
+        # notification area sees qdbrowser downloads. Best-effort; the
+        # forwarder swallows transport errors.
+        if self.forwarder is not None:
+            self.forwarder.notify_download(
+                download_id, filename, state,
+                url=str(kw.get("url", "")), mime=str(kw.get("mime", "")),
+                total_bytes=int(kw.get("total_bytes", 0) or 0),
+                bytes_received=int(kw.get("bytes_received", 0) or 0))
 
     def emit_media_state_changed(self, state: str) -> None:
         self._emit_signal("MediaStateChanged", (str(state),), "s")
+        # Step-4: republish via the MPRIS daemon. Pull the current
+        # title/artist off the media proxy so the admin widget shows
+        # metadata, not just a bare state.
+        if self.forwarder is not None:
+            title = artist = ""
+            if self.media_proxy is not None:
+                title, artist, _ = self.media_proxy.status()
+            self.forwarder.publish_media(
+                title=title, artist=artist, state=str(state))
 
     # -- lifecycle ----
 
@@ -795,6 +955,10 @@ class BridgeAdapterPlugin(Plugin):
             pass
         self.history_proxy = HistoryProxy(history_plugin)
         self.bookmarks_proxy = BookmarksProxy(bookmarks_plugin)
+        # Step-4 outbound forwarder. Lazily binds a jeepney session-bus
+        # client on first use; only reachable once daemons are present
+        # (this whole activate() path is gated by _daemons_available()).
+        self.forwarder = DaemonForwarder()
 
         self._handlers = BridgeAdapterHandlers(
             self.tabs_proxy, self.pages_proxy,
