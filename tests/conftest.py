@@ -199,6 +199,41 @@ def _cleanup_after_test():
         _drain_qt_events(app, rounds=12)
 
 
+# Pytest exit code stashed by pytest_sessionfinish when a hard exit is
+# warranted; consumed by pytest_unconfigure. None = no hard exit.
+_PENDING_HARD_EXIT = None
+
+
+def _should_hard_exit() -> bool:
+    """Whether to os._exit() at session end to dodge the QtWebEngine
+    static-destructor abort.
+
+    Qt's global ``defaultProfile()`` (materialized by any test that touches it,
+    e.g. UA pinning) is not tracked by the ordered teardown above and cannot be
+    deleted; at interpreter exit its C++ static destructor races the Chromium
+    GPU/IPC subprocess, producing an intermittent native "Fatal Python error:
+    Aborted" under load — exactly what flakes the qci per-file loop. A hard
+    ``os._exit`` *after* pytest has already decided pass/fail skips that
+    static-destruction entirely while preserving the exit code.
+
+    Gated OFF whenever it would discard data a caller needs: coverage runs
+    (their atexit flush), pytest-xdist workers, an active tracer/debugger, or
+    an explicit ``QDB_NO_HARD_EXIT`` opt-out. Only fires once QtWebEngine is
+    actually loaded (the abort is its bug).
+    """
+    if os.environ.get("QDB_NO_HARD_EXIT"):
+        return False
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        return False
+    if os.environ.get("COVERAGE_RUN") or os.environ.get("COV_CORE_SOURCE"):
+        return False
+    if sys.gettrace() is not None:
+        return False
+    if "coverage" in sys.modules:
+        return False
+    return "PyQt6.QtWebEngineCore" in sys.modules
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Release QtWebEngine objects in dependency order before Python exit."""
     try:
@@ -224,6 +259,27 @@ def pytest_sessionfinish(session, exitstatus):
     finally:
         _restore_env()
         shutil.rmtree(_TEST_HOME, ignore_errors=True)
+        # Arm the hard-exit (performed in pytest_unconfigure, the final hook,
+        # so the terminal summary AND any FAILURES section are printed first —
+        # qci/triage rely on that output). In `finally` so it also covers the
+        # early-return path above.
+        if _should_hard_exit():
+            global _PENDING_HARD_EXIT
+            _PENDING_HARD_EXIT = int(exitstatus) if exitstatus is not None else 0
+
+
+def pytest_unconfigure(config):
+    """Final hook: skip the QtWebEngine static-destructor teardown race by
+    hard-exiting with the status pytest already computed. Runs after the
+    terminal summary/FAILURES output, so logs are intact; the exit code is
+    preserved so failures are never masked (a residual abort would surface as a
+    flaky non-zero, never a false pass). No-op unless armed by
+    pytest_sessionfinish (see _should_hard_exit)."""
+    if _PENDING_HARD_EXIT is None:
+        return
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(_PENDING_HARD_EXIT)
 
 
 @pytest.fixture
