@@ -283,6 +283,17 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             log.exception("security interceptor failed: %s", exc)
 
+        # 1b. §6: pin the single source-of-truth UA on every profile that
+        #     already exists (including Qt's defaultProfile, created
+        #     outside get_profile). New profiles are pinned on creation in
+        #     get_profile. This eliminates per-profile UA drift between
+        #     silos.
+        try:
+            from qdbrowser import webview as wv_mod
+            wv_mod.pin_all_profiles()
+        except Exception as exc:
+            log.warning("user-agent pinning failed: %s", exc)
+
         # 2. Certificate pinning — install on every profile that exists
         #    now and subscribe to future profile creations.
         try:

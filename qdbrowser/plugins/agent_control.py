@@ -903,6 +903,15 @@ class AgentControlPlugin(Plugin):
             log.exception("config reload on SIGHUP failed")
         self._allowed_exes_cache = None
         self._allowed_exes_signature = None
+        # §6: a reloaded ``[general] user_agent`` must be re-pinned on
+        # every live profile, otherwise existing profiles keep the old UA
+        # while new ones get the new value — exactly the per-profile drift
+        # the single-source-of-truth UA is meant to prevent.
+        try:
+            from qdbrowser import webview as _wv_mod
+            _wv_mod.pin_all_profiles()
+        except Exception:
+            log.exception("user-agent re-pin on SIGHUP failed")
 
     # -- Layer 6: handshake protocol ------------------------------------
 
