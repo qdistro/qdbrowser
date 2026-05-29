@@ -23,7 +23,7 @@ from PyQt6.QtCore import (
     QSize,
 )
 from PyQt6.QtGui import QIcon, QPainter
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QSizePolicy
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QSizePolicy, QApplication
 from PyQt6.QtWebEngineCore import (
     QWebEngineProfile, QWebEnginePage, QWebEngineSettings,
     QWebEngineUrlRequestInterceptor,
@@ -138,6 +138,13 @@ def pin_all_profiles(config=None) -> None:
     Qt default). Enforces in both directions, so it never leaves a
     previously-pinned profile stale.
     """
+    # QWebEngineProfile — including defaultProfile() — requires a running
+    # QApplication. Touching it without one crashes the WebEngine C++ layer,
+    # which is a native segfault rather than a catchable Python exception
+    # (the try/except below cannot save us). With no QApplication there are
+    # also no live WebEngine profiles to pin, so there is nothing to do.
+    if QApplication.instance() is None:
+        return
     seen = set()
     for prof in list(_PROFILES.values()):
         if id(prof) in seen:
