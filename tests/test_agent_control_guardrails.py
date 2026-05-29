@@ -909,6 +909,17 @@ def test_sighup_reloads_config(fresh_config, monkeypatch):
     from qdbrowser.config import Config
     from qdbrowser.plugins.agent_control import AgentControlPlugin
 
+    # This test verifies CONFIG-reload semantics, not user-agent pinning (the
+    # latter is covered by test_user_agent.py::test_sighup_repins_profiles).
+    # The reload's incidental pin_all_profiles() call lazily materializes Qt's
+    # global defaultProfile() in a process that never opened a WebView, leaving
+    # an orphan profile whose static teardown races the Chromium GPU/IPC
+    # subprocess at interpreter exit -> intermittent native "Fatal Python
+    # error: Aborted" under load. Stub the side-effect out (mirrors the sibling
+    # SIGHUP test); none of the assertions below depend on it.
+    from qdbrowser import webview as _wv_mod
+    monkeypatch.setattr(_wv_mod, "pin_all_profiles", lambda *a, **k: None)
+
     plug = AgentControlPlugin()
     # Manually install the handler (normally done by activate()).
     plug._install_sighup_handler()
