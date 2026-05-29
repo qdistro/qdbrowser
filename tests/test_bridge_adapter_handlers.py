@@ -193,6 +193,19 @@ def test_unknown_method_raises():
         h.dispatch("NoSuchMethod", ())
 
 
+@pytest.mark.cheat_aware(
+    protects="a mutating bridge method is refused (PermissionError) when "
+             "polkit denies the caller — the permission boundary is enforced "
+             "before dispatch, not after",
+    severity="critical",
+    cheats=[
+        "change pytest.raises(PermissionError) to assert it returns instead",
+        "switch the method to a read-only one that bypasses the polkit gate",
+        "set polkit_allow=True to dodge the deny path",
+    ],
+    consequence="an unauthorized caller drives the browser (opens tabs / "
+                "navigates) through the bridge with no policy check",
+)
 def test_polkit_denies_blocks_dispatch():
     h = _make_handlers(polkit_allow=False)
     # Mutating method → blocked.
@@ -760,6 +773,19 @@ def test_recv_loop_handles_introspect(monkeypatch):
     assert ba.QDBROWSER_INTROSPECTION_XML in reply.body
 
 
+@pytest.mark.cheat_aware(
+    protects="when the caller's PID cannot be resolved, a mutating method "
+             "from an external sender is DENIED (AccessDenied), not allowed "
+             "to fall through — caller identity must be known to authorize",
+    severity="critical",
+    cheats=[
+        "stop asserting the reply is MessageType.error / AccessDenied",
+        "provide a fake _pid_conn so the deny branch is never exercised",
+        "assert on a read-only method that skips the polkit gate",
+    ],
+    consequence="an unidentifiable caller bypasses authorization and drives "
+                "the browser bridge as if it were trusted",
+)
 def test_recv_loop_denies_when_pid_resolution_fails(monkeypatch):
     """When _pid_conn is None, mutating methods from external callers
     must be denied (PermissionError → AccessDenied D-Bus error)."""

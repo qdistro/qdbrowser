@@ -15,6 +15,7 @@ import hashlib
 import hmac
 from dataclasses import dataclass
 
+import pytest
 
 from qdbrowser import pwd_autofill as pa
 
@@ -201,6 +202,19 @@ class TestOrchestratorFill:
         assert r.username == "bob"
         assert r.password == "s2"
 
+    @pytest.mark.cheat_aware(
+        protects="every credential-fill request carries an intent token "
+                 "HMAC-bound to the session secret, so the bridge can prove "
+                 "the request came from this browser and was not replayed",
+        severity="critical",
+        cheats=[
+            "drop or weaken the HMAC re-derivation assertion",
+            "stop asserting intent_token is present in the bridge args",
+            "assert only op/url and skip the request_id|ts|op canonical form",
+        ],
+        consequence="the browser bridge accepts unbound/forged fill requests, "
+                    "letting a same-uid process pull vault credentials",
+    )
     def test_intent_token_in_bridge_call(self):
         bridge = _FakeBridge.with_answers({
             "pwd.fill": {
@@ -279,6 +293,19 @@ class TestSelectBridgeNames:
     attacker that claims org.qdistro.BrowserBridge.evil is filtered
     out (P04 H1 security review)."""
 
+    @pytest.mark.cheat_aware(
+        protects="only all-digit BrowserBridge.<pid> bus names are trusted, "
+                 "so a same-uid attacker that claims "
+                 "org.qdistro.BrowserBridge.evil cannot impersonate the bridge",
+        severity="critical",
+        cheats=[
+            "loosen the suffix filter to a substring/startswith match",
+            "add 'evil' to the expected list to make the assert pass",
+            "stop filtering and accept all returned names",
+        ],
+        consequence="the autofill orchestrator hands the session secret and "
+                    "credential requests to an attacker-controlled bridge",
+    )
     def test_only_numeric_suffixes_accepted(self):
         names = ["org.qdistro.BrowserBridge.evil",
                  "org.qdistro.BrowserBridge.42",
