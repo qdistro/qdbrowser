@@ -420,14 +420,20 @@ _DL_STATE_TO_WIRE = {
     4: "interrupted",   # interrupted
 }
 
-# qdbrowser is not a third-party browser launched by an RPM binary, so
-# the daemons' browser_bridge_allowed gate (which checks for the native-
-# messaging host's exe + an allowlisted parent browser) does NOT pass for
-# it: until the daemon side grows an explicit qdbrowser allowance, these
-# forwards are rejected with `parent_not_allowed` (fail-closed). The
-# marker is advisory only — the daemon always resolves the caller uid
-# from SO_PEERCRED, never from the body — and is carried so the eventual
-# daemon-side allowance can recognise a qdbrowser caller for audit.
+# qdbrowser is a first-party qdistro browser, not a third-party browser
+# launched by an RPM binary, so it cannot satisfy the daemons'
+# `browser_bridge_allowed` gate (no native-messaging host script, no
+# allowlisted parent-browser exe). The daemon side now carries an
+# EXPLICIT, narrow allowance for it: `daemon_forward_allowed` admits a
+# caller whose kernel-attested executed script (read from /proc, never
+# the body) is the installed `qdbrowser` entry point
+# (`qdbrowser_forwarder_allowed` in qdistro_browser_daemon_identity.py).
+# So these forwards are now ACCEPTED when this process is the real
+# qdbrowser — and still fail closed (`parent_not_allowed`) for anything
+# else. The marker below stays ADVISORY only: it labels the forward as
+# qdbrowser-sourced for the player-name suffix / audit, but the daemon
+# never trusts it for the security decision — caller uid comes from
+# SO_PEERCRED and the allow decision from the /proc executed-script.
 _QDBROWSER_MARKER = "qdbrowser"
 
 
