@@ -60,12 +60,11 @@ def _row_summary(row: dict) -> dict:
         "source_url": row.get("source_url") or "",
         "scan_result": row.get("scan_result") or "pending",
         "timestamp": _format_timestamp(row.get("fetched_at")),
-        # The release() helper refuses 'bad' files and 'pending' ones
-        # (download/scan not finished), so disable the button up front
-        # for those states too. 'clean', 'skipped' and scanner 'error'
-        # are releasable.
+        # The release() helper refuses 'bad', 'pending', and scanner
+        # 'error' rows. 'skipped' remains releasable because that is an
+        # explicit policy result, not a scanner failure.
         "releasable": (row.get("scan_result") or "pending")
-        not in ("bad", "pending"),
+        not in ("bad", "pending", "error"),
     }
 
 

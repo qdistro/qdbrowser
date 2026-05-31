@@ -55,6 +55,13 @@ def test_row_summary_pending_not_releasable():
     assert s["releasable"] is False
 
 
+def test_row_summary_scanner_error_not_releasable():
+    from qdbrowser.plugins.quarantine_panel import _row_summary
+    s = _row_summary({"id": 1, "filename": "x", "source_url": "",
+                      "scan_result": "error", "fetched_at": 0})
+    assert s["releasable"] is False
+
+
 def test_row_summary_skipped_is_releasable():
     from qdbrowser.plugins.quarantine_panel import _row_summary
     s = _row_summary({"id": 1, "filename": "x", "source_url": "",

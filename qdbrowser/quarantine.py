@@ -367,13 +367,15 @@ def release(store: QuarantineStore,
     if not row:
         log.warning("release: unknown id=%s", row_id)
         return None
-    if row.get("scan_result") == "bad":
+    scan_result = row.get("scan_result") or "pending"
+    if scan_result == "bad":
         log.warning("release: refusing bad file id=%s", row_id)
         return None
     # 'pending' means the download hasn't finished / been scanned yet —
     # the file may still be partial. Don't let it out of quarantine
-    # until intake completes ('clean', 'skipped', or scanner 'error').
-    if row.get("scan_result") == "pending":
+    # until intake completes. Scanner errors remain quarantined; skipped
+    # scans are explicit policy, while errors mean the policy could not run.
+    if scan_result in ("pending", "error"):
         log.warning("release: refusing still-pending file id=%s", row_id)
         return None
     src = row["quarantine_path"]

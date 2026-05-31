@@ -236,6 +236,20 @@ def test_release_refuses_bad_scan_result(tmp_path):
     store.close()
 
 
+def test_release_refuses_scanner_error(tmp_path):
+    from qdbrowser.quarantine import release
+    store = _make_store(tmp_path)
+    qpath = os.path.join(store.directory, "unknown.bin")
+    open(qpath, "wb").close()
+    row_id = store.record(quarantine_path=qpath, filename="unknown.bin",
+                          source_url="https://x/", scan_result="error")
+    out_dir = tmp_path / "Downloads"
+    result = release(store, row_id, str(out_dir), authorized=True)
+    assert result is None
+    assert os.path.exists(qpath)
+    store.close()
+
+
 def test_release_unknown_id(tmp_path):
     from qdbrowser.quarantine import release
     store = _make_store(tmp_path)
