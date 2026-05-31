@@ -34,6 +34,52 @@ class _RecordingCall:
         return dict(self._reply)
 
 
+class _Signal:
+    def __init__(self):
+        self.callbacks = []
+
+    def connect(self, callback):
+        self.callbacks.append(callback)
+        return callback
+
+    def disconnect(self, callback):
+        self.callbacks.remove(callback)
+
+    def emit(self, *args):
+        for callback in list(self.callbacks):
+            callback(*args)
+
+
+class _FakePage:
+    def __init__(self):
+        self.recentlyAudibleChanged = _Signal()
+
+
+class _FakeView:
+    def __init__(self, page):
+        self._page = page
+
+    def page(self):
+        return self._page
+
+
+class _FakeWebView:
+    def __init__(self, tab_id=9, title="Song Page"):
+        self.stable_id = tab_id
+        self._title = title
+        self._page = _FakePage()
+        self.view = _FakeView(self._page)
+        self.title_changed = _Signal()
+        self.load_started = _Signal()
+
+    def title(self):
+        return self._title
+
+    def set_title(self, title):
+        self._title = title
+        self.title_changed.emit(self, title)
+
+
 # --------------------------------------------------------------------- #
 # Downloads forwarding
 # --------------------------------------------------------------------- #
@@ -153,6 +199,61 @@ def test_plugin_emit_media_pulls_metadata_from_proxy():
     assert body["title"] == "Track"
     assert body["artist"] == "Artist"
     assert body["playback_status"] == "playing"
+
+
+def test_plugin_forwards_real_page_audible_changes():
+    call = _RecordingCall()
+    plugin = ba.BridgeAdapterPlugin()
+    plugin.forwarder = ba.DaemonForwarder(call=call)
+    plugin.media_proxy = ba.MediaProxy()
+    wv = _FakeWebView(tab_id=12, title="Now Playing")
+    plugin._on_webview_added(wv)
+
+    wv.view.page().recentlyAudibleChanged.emit(True)
+    body = call.calls[-1]["body"]
+    assert body["title"] == "Now Playing"
+    assert body["playback_status"] == "playing"
+    assert body["tab_id"] == 12
+
+    wv.view.page().recentlyAudibleChanged.emit(False)
+    assert call.calls[-1]["body"]["playback_status"] == "paused"
+
+
+def test_plugin_updates_audible_title_and_stops_on_load():
+    call = _RecordingCall()
+    plugin = ba.BridgeAdapterPlugin()
+    plugin.forwarder = ba.DaemonForwarder(call=call)
+    plugin.media_proxy = ba.MediaProxy()
+    wv = _FakeWebView(tab_id=13, title="Old")
+    plugin._on_webview_added(wv)
+    wv.view.page().recentlyAudibleChanged.emit(True)
+
+    wv.set_title("New Track")
+    assert call.calls[-1]["body"]["title"] == "New Track"
+    assert call.calls[-1]["body"]["playback_status"] == "playing"
+
+    wv.load_started.emit(wv)
+    assert call.calls[-1]["body"]["playback_status"] == "stopped"
+
+
+def test_plugin_stops_paused_media_on_load_and_remove():
+    call = _RecordingCall()
+    plugin = ba.BridgeAdapterPlugin()
+    plugin.forwarder = ba.DaemonForwarder(call=call)
+    plugin.media_proxy = ba.MediaProxy()
+    wv = _FakeWebView(tab_id=14, title="Paused Track")
+    plugin._on_webview_added(wv)
+    wv.view.page().recentlyAudibleChanged.emit(True)
+    wv.view.page().recentlyAudibleChanged.emit(False)
+    assert call.calls[-1]["body"]["playback_status"] == "paused"
+
+    wv.load_started.emit(wv)
+    assert call.calls[-1]["body"]["playback_status"] == "stopped"
+
+    wv.view.page().recentlyAudibleChanged.emit(True)
+    wv.view.page().recentlyAudibleChanged.emit(False)
+    plugin._on_webview_removed(wv)
+    assert call.calls[-1]["body"]["playback_status"] == "stopped"
 
 
 def test_plugin_emit_without_forwarder_is_safe():

@@ -855,6 +855,9 @@ class BridgeAdapterPlugin(Plugin):
         self.bookmarks_proxy: Optional[BookmarksProxy] = None
         # Step-4 outbound forwarder to the Phase-9e Downloads/MPRIS daemons.
         self.forwarder: Optional[DaemonForwarder] = None
+        self._media_connections: dict = {}
+        self._audible_tabs: set[int] = set()
+        self._media_tabs: set[int] = set()
         self._recv_thread: Optional[threading.Thread] = None
         self._dispatch_helper = _DispatchHelper()
         self._stop = threading.Event()
@@ -898,17 +901,21 @@ class BridgeAdapterPlugin(Plugin):
                 total_bytes=int(kw.get("total_bytes", 0) or 0),
                 bytes_received=int(kw.get("bytes_received", 0) or 0))
 
-    def emit_media_state_changed(self, state: str) -> None:
+    def emit_media_state_changed(self, state: str, *, title: str = "",
+                                 artist: str = "",
+                                 tab_id: Optional[int] = None) -> None:
         self._emit_signal("MediaStateChanged", (str(state),), "s")
         # Step-4: republish via the MPRIS daemon. Pull the current
         # title/artist off the media proxy so the admin widget shows
         # metadata, not just a bare state.
         if self.forwarder is not None:
-            title = artist = ""
             if self.media_proxy is not None:
-                title, artist, _ = self.media_proxy.status()
+                proxy_title, proxy_artist, _ = self.media_proxy.status()
+                title = title or proxy_title
+                artist = artist or proxy_artist
             self.forwarder.publish_media(
-                title=title, artist=artist, state=str(state))
+                title=title, artist=artist, state=str(state),
+                tab_id=tab_id)
 
     # -- lifecycle ----
 
@@ -1021,6 +1028,8 @@ class BridgeAdapterPlugin(Plugin):
                         self._on_webview_removed)
                 except Exception:
                     pass
+                for wv in list(self._media_connections):
+                    self._disconnect_media_signals(wv)
         finally:
             if self._conn is not None:
                 try:
@@ -1116,6 +1125,7 @@ class BridgeAdapterPlugin(Plugin):
         except Exception:
             return
         self.emit_tab_added(tid, url or "")
+        self._wire_media_signals(wv)
 
     def _on_webview_removed(self, wv) -> None:
         try:
@@ -1123,7 +1133,103 @@ class BridgeAdapterPlugin(Plugin):
                               getattr(wv, "_stable_id", 0)))
         except Exception:
             return
+        self._disconnect_media_signals(wv)
+        if tid in self._media_tabs:
+            self._media_tabs.discard(tid)
+            self._audible_tabs.discard(tid)
+            self._publish_media_for_webview(wv, "stopped")
         self.emit_tab_removed(tid)
+
+    def _wire_media_signals(self, wv) -> None:
+        if wv in self._media_connections:
+            return
+        conns = []
+        try:
+            page = wv.view.page()
+        except Exception:
+            page = None
+        signal = getattr(page, "recentlyAudibleChanged", None)
+        if signal is not None:
+            try:
+                conn = signal.connect(
+                    lambda audible, _wv=wv:
+                    self._on_recently_audible_changed(_wv, audible))
+                conns.append((signal, conn))
+            except Exception as exc:
+                log.debug("media audible signal wiring failed: %s", exc)
+        for signal_name, handler in (
+                ("title_changed", self._on_media_title_changed),
+                ("load_started", self._on_media_load_started)):
+            signal = getattr(wv, signal_name, None)
+            if signal is None:
+                continue
+            try:
+                conn = signal.connect(
+                    lambda *args, _wv=wv, _handler=handler:
+                    _handler(_wv, *args))
+                conns.append((signal, conn))
+            except Exception as exc:
+                log.debug("media %s wiring failed: %s", signal_name, exc)
+        if conns:
+            self._media_connections[wv] = conns
+
+    def _disconnect_media_signals(self, wv) -> None:
+        conns = self._media_connections.pop(wv, None)
+        if not conns:
+            return
+        for signal, conn in conns:
+            try:
+                signal.disconnect(conn)
+            except Exception:
+                pass
+
+    def _on_recently_audible_changed(self, wv, audible: bool) -> None:
+        tid = self._webview_tab_id(wv)
+        if tid is None:
+            return
+        if audible:
+            self._audible_tabs.add(tid)
+            self._media_tabs.add(tid)
+            self._publish_media_for_webview(wv, "playing")
+            return
+        if tid in self._audible_tabs:
+            self._audible_tabs.discard(tid)
+            self._publish_media_for_webview(wv, "paused")
+
+    def _on_media_title_changed(self, wv, *args) -> None:
+        tid = self._webview_tab_id(wv)
+        if tid in self._audible_tabs:
+            self._publish_media_for_webview(wv, "playing")
+
+    def _on_media_load_started(self, wv, *args) -> None:
+        tid = self._webview_tab_id(wv)
+        if tid in self._media_tabs:
+            self._media_tabs.discard(tid)
+            self._audible_tabs.discard(tid)
+            self._publish_media_for_webview(wv, "stopped")
+
+    @staticmethod
+    def _webview_tab_id(wv) -> Optional[int]:
+        try:
+            return int(getattr(wv, "stable_id", getattr(wv, "_stable_id", 0)))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _webview_title(wv) -> str:
+        try:
+            if callable(getattr(wv, "title", None)):
+                return str(wv.title() or "")
+        except Exception:
+            pass
+        return ""
+
+    def _publish_media_for_webview(self, wv, state: str) -> None:
+        title = self._webview_title(wv)
+        if self.media_proxy is not None:
+            self.media_proxy.update(title=title, state=state)
+        self.emit_media_state_changed(
+            state, title=title, tab_id=self._webview_tab_id(wv))
 
     # -- inbound D-Bus receive loop ----
 
