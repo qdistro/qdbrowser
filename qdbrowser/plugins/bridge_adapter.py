@@ -884,6 +884,10 @@ class BridgeAdapterPlugin(Plugin):
                               state: int = 0, **kw) -> None:
         self._emit_signal(
             "DownloadStarted", (int(download_id), str(filename)), "us")
+        self.forward_download_state(download_id, filename, 0, **kw)
+
+    def forward_download_state(self, download_id: int, filename: str,
+                               state: int = 0, **kw) -> None:
         # Step-4: also forward to the Downloads daemon so the admin
         # notification area sees qdbrowser downloads. Best-effort; the
         # forwarder swallows transport errors.

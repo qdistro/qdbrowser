@@ -476,12 +476,17 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
 
         if self._panel:
             self._panel.add_active(request, quarantined=is_quarantined)
-        request.accept()
+        try:
+            request.isFinishedChanged.connect(
+                lambda _r=request: self._notify_bridge_finished(_r))
+        except Exception as exc:
+            log.warning("bridge download-finished hook failed: %s", exc)
         # Notify bridge_adapter (if loaded and active) so it can fan
         # the event out over D-Bus to qdistro daemons. We look it up
         # via the plugin manager rather than importing the module so
         # qdbrowser still works when bridge_adapter is disabled.
         self._notify_bridge_started(request)
+        request.accept()
 
     def _set_direct_download_dir(self, request: QWebEngineDownloadRequest):
         """Fallback: write directly to the user's downloads directory.
@@ -518,27 +523,99 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
             log.warning("quarantine post-finish failed id=%s: %s",
                         row_id, exc)
 
-    def _notify_bridge_started(self, request: QWebEngineDownloadRequest) -> None:
+    @staticmethod
+    def _download_id(request: QWebEngineDownloadRequest) -> int:
+        return int(request.id()) if hasattr(request, "id") else id(request)
+
+    @staticmethod
+    def _download_state_int(request: QWebEngineDownloadRequest) -> int:
+        state = request.state()
+        return int(getattr(state, "value", state))
+
+    @staticmethod
+    def _download_filename(request: QWebEngineDownloadRequest) -> str:
+        return os.path.basename(
+            os.path.join(request.downloadDirectory(),
+                         request.downloadFileName()))
+
+    @staticmethod
+    def _download_counter(request: QWebEngineDownloadRequest,
+                          attr: str) -> int:
+        try:
+            value = getattr(request, attr)
+        except Exception:
+            return 0
+        try:
+            value = value() if callable(value) else value
+            return int(value or 0)
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _download_url(request: QWebEngineDownloadRequest) -> str:
+        try:
+            url = request.url()
+            return url.toString() if hasattr(url, "toString") else str(url)
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _download_mime(request: QWebEngineDownloadRequest) -> str:
+        try:
+            return str(request.mimeType())
+        except Exception:
+            return ""
+
+    def _bridge_adapter(self):
         win = self._window
         if win is None or not hasattr(win, "plugins"):
-            return
+            return None
         try:
             bridge = win.plugins._instances.get("bridge_adapter")
         except Exception:
-            return
+            return None
         if bridge is None or not getattr(bridge, "active", False):
+            return None
+        return bridge
+
+    def _notify_bridge_started(self, request: QWebEngineDownloadRequest) -> None:
+        bridge = self._bridge_adapter()
+        if bridge is None:
             return
         try:
-            # request.id() exists on Qt6's QWebEngineDownloadRequest;
-            # fall back to python id() so unit tests with fakes don't
-            # crash here.
-            did = int(request.id()) if hasattr(request, "id") else id(request)
-            filename = os.path.basename(
-                os.path.join(request.downloadDirectory(),
-                             request.downloadFileName()))
-            bridge.emit_download_started(did, filename)
+            bridge.emit_download_started(
+                self._download_id(request),
+                self._download_filename(request),
+                url=self._download_url(request),
+                mime=self._download_mime(request),
+                total_bytes=self._download_counter(request, "totalBytes"),
+                bytes_received=self._download_counter(request, "receivedBytes"))
         except Exception as exc:
             log.warning("bridge download-started notify failed: %s", exc)
+
+    def _notify_bridge_finished(self, request: QWebEngineDownloadRequest) -> None:
+        try:
+            if not request.isFinished():
+                return
+        except Exception:
+            return
+        bridge = self._bridge_adapter()
+        if bridge is None:
+            return
+        try:
+            forward = getattr(bridge, "forward_download_state", None)
+            if forward is None:
+                return
+            forward(
+                self._download_id(request),
+                self._download_filename(request),
+                state=self._download_state_int(request),
+                url=self._download_url(request),
+                mime=self._download_mime(request),
+                total_bytes=self._download_counter(request, "totalBytes"),
+                bytes_received=self._download_counter(request, "receivedBytes"))
+        except Exception as exc:
+            log.warning("bridge download-finished notify failed: %s", exc)
 
     def get_commands(self, window):
         return [

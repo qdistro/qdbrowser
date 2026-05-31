@@ -139,7 +139,7 @@ def test_plugin_emit_download_forwards():
                                  url="https://x/report.pdf")
     assert len(call.calls) == 1
     assert call.calls[0]["body"]["download_id"] == 5
-    assert call.calls[0]["body"]["state"] == "complete"
+    assert call.calls[0]["body"]["state"] == "in_progress"
 
 
 def test_plugin_emit_media_pulls_metadata_from_proxy():
