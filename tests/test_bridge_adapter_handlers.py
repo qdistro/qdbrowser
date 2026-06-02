@@ -279,6 +279,112 @@ def test_polkit_check_pkcheck_oserror_denies(monkeypatch):
 
 
 # --------------------------------------------------------------------- #
+# Finding #12: history / bookmarks search are NOT unauthenticated.
+# --------------------------------------------------------------------- #
+
+
+def test_history_bookmarks_not_in_open_actions():
+    """HistorySearch/BookmarksSearch must require authorization — they
+    expose privacy-sensitive browsing metadata, so their action ids
+    must NOT short-circuit through _OPEN_ACTIONS."""
+    hist = ba.METHOD_TO_ACTION["HistorySearch"]
+    book = ba.METHOD_TO_ACTION["BookmarksSearch"]
+    assert hist not in ba._OPEN_ACTIONS
+    assert book not in ba._OPEN_ACTIONS
+    # Only the live-session inventory ops stay open.
+    assert ba._OPEN_ACTIONS == {
+        "org.qdistro.qdbrowser.tabs.list",
+        "org.qdistro.qdbrowser.media.status",
+        "org.qdistro.qdbrowser.downloads.list",
+    }
+
+
+def test_polkit_check_does_not_short_circuit_history_bookmarks(monkeypatch):
+    """With a real caller pid, history/bookmarks actions must consult
+    pkcheck (not return True for free). We make pkcheck deny and assert
+    the call is refused."""
+    class _Denied:
+        returncode = 1
+        stdout = b""
+        stderr = b""
+
+    monkeypatch.setattr(ba.subprocess, "run", lambda *a, **kw: _Denied())
+    assert ba.polkit_check(
+        "org.qdistro.qdbrowser.history.search", 4242) is False
+    assert ba.polkit_check(
+        "org.qdistro.qdbrowser.bookmarks.search", 4242) is False
+
+
+def test_history_search_denied_when_polkit_denies():
+    """A non-internal caller whose polkit check fails cannot read
+    history through dispatch()."""
+    h = _make_handlers(polkit_allow=False, history=_FakeHistory())
+    with pytest.raises(PermissionError):
+        h.dispatch("HistorySearch", ("anything", 50), caller_pid=4242)
+
+
+def test_bookmarks_search_denied_when_polkit_denies():
+    h = _make_handlers(polkit_allow=False, bookmarks=_FakeBookmarks())
+    with pytest.raises(PermissionError):
+        h.dispatch("BookmarksSearch", ("anything", 50), caller_pid=4242)
+
+
+def _load_policy_action_ids():
+    import os
+    import xml.etree.ElementTree as ET
+    here = os.path.dirname(os.path.abspath(__file__))
+    policy = os.path.join(here, "..", "polkit",
+                          "org.qdistro.qdbrowser.policy")
+    tree = ET.parse(policy)
+    return {a.get("id") for a in tree.getroot().findall("action")}
+
+
+def test_every_mapped_action_has_a_policy_entry():
+    """Each method's polkit action id must exist in the policy XML —
+    otherwise a non-open action would be undefined and polkit would
+    deny it by implicit-default with no operator-visible declaration
+    (and an open action would silently bypass review). Closes the
+    history/bookmarks gap from finding #12."""
+    policy_ids = _load_policy_action_ids()
+    for method, action in ba.METHOD_TO_ACTION.items():
+        if action in ba._OPEN_ACTIONS:
+            # Open actions are allow:yes; still expect them declared.
+            assert action in policy_ids, (
+                f"open action {action} for {method} missing from policy")
+        else:
+            assert action in policy_ids, (
+                f"gated action {action} for {method} missing from policy")
+
+
+def test_history_bookmarks_policy_requires_authorization():
+    """The new history/bookmarks actions must require at least active-
+    user authorization (auth_*) — never allow:yes."""
+    import os
+    import xml.etree.ElementTree as ET
+    here = os.path.dirname(os.path.abspath(__file__))
+    policy = os.path.join(here, "..", "polkit",
+                          "org.qdistro.qdbrowser.policy")
+    root = ET.parse(policy).getroot()
+    for action_id in ("org.qdistro.qdbrowser.history.search",
+                      "org.qdistro.qdbrowser.bookmarks.search"):
+        node = next(a for a in root.findall("action")
+                    if a.get("id") == action_id)
+        active = node.find("defaults/allow_active").text
+        assert active.startswith("auth_"), (
+            f"{action_id} allow_active={active!r} is not an auth gate")
+
+
+def test_search_limit_is_clamped():
+    """Oversized / bogus limits are clamped so a single authorized
+    query can't drain unbounded browsing metadata (finding #12)."""
+    assert ba._clamp_search_limit(10_000) == ba._MAX_SEARCH_LIMIT
+    assert ba._clamp_search_limit(0) == ba._MAX_SEARCH_LIMIT
+    assert ba._clamp_search_limit(-5) == ba._MAX_SEARCH_LIMIT
+    assert ba._clamp_search_limit("nope") == ba._MAX_SEARCH_LIMIT
+    assert ba._clamp_search_limit(25) == 25
+
+
+# --------------------------------------------------------------------- #
 # Proxy unit tests — verify the duck-typed adapters.
 # --------------------------------------------------------------------- #
 
@@ -567,15 +673,35 @@ def test_bookmarks_proxy_respects_limit():
 
 
 # --------------------------------------------------------------------- #
-# Polkit: history + bookmarks are read-only (short-circuit).
+# Polkit: history + bookmarks now REQUIRE authorization (finding #12).
+# They used to short-circuit through _OPEN_ACTIONS; that allowed any
+# session-bus caller to bulk-read browsing metadata without a prompt.
 # --------------------------------------------------------------------- #
 
 
-def test_polkit_check_short_circuits_history_and_bookmarks():
+def test_polkit_check_history_and_bookmarks_consult_pkcheck(monkeypatch):
+    """With a real caller pid, history/bookmarks must go through pkcheck
+    rather than returning True for free. Here pkcheck grants, proving
+    the enforcement path is actually exercised."""
+    seen: list = []
+
+    class _Granted:
+        returncode = 0
+        stdout = b""
+        stderr = b""
+
+    def fake_run(args, **kw):
+        seen.append(args)
+        return _Granted()
+
+    monkeypatch.setattr(ba.subprocess, "run", fake_run)
     assert ba.polkit_check(
         "org.qdistro.qdbrowser.history.search", 1) is True
     assert ba.polkit_check(
         "org.qdistro.qdbrowser.bookmarks.search", 1) is True
+    # Both calls shelled out to pkcheck (no _OPEN_ACTIONS bypass).
+    assert any("org.qdistro.qdbrowser.history.search" in a for a in seen)
+    assert any("org.qdistro.qdbrowser.bookmarks.search" in a for a in seen)
 
 
 # --------------------------------------------------------------------- #

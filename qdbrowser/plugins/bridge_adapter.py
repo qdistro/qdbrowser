@@ -169,16 +169,36 @@ METHOD_TO_ACTION = {
 }
 
 
-# Actions that need no polkit check (read-only inventory). pkcheck would
-# also pass them via allow:yes, but skipping the subprocess is faster
-# and the audit story stays clean.
+# Actions that need no polkit check (read-only *inventory* of the live
+# session — open tabs, current media, in-flight downloads). pkcheck
+# would also pass them via allow:yes, but skipping the subprocess is
+# faster and the audit story stays clean.
+#
+# History and bookmarks are deliberately NOT here (finding #12): they
+# expose privacy-sensitive browsing metadata that can be bulk-exfiltr-
+# ated, so every caller must pass an explicit polkit authorization
+# (auth_active in the policy) — there is no allow-on-disabled path.
 _OPEN_ACTIONS = {
     "org.qdistro.qdbrowser.tabs.list",
     "org.qdistro.qdbrowser.media.status",
     "org.qdistro.qdbrowser.downloads.list",
-    "org.qdistro.qdbrowser.history.search",
-    "org.qdistro.qdbrowser.bookmarks.search",
 }
+
+
+# Upper bound on history/bookmarks search results (finding #12): cap
+# how much browsing metadata a single authorized query can drain.
+_MAX_SEARCH_LIMIT = 200
+
+
+def _clamp_search_limit(limit: Any) -> int:
+    """Coerce a caller-supplied result limit into [1, _MAX_SEARCH_LIMIT]."""
+    try:
+        n = int(limit)
+    except (TypeError, ValueError):
+        return _MAX_SEARCH_LIMIT
+    if n <= 0:
+        return _MAX_SEARCH_LIMIT
+    return min(n, _MAX_SEARCH_LIMIT)
 
 
 def polkit_check(action_id: str, caller_pid: Optional[int],
@@ -669,16 +689,26 @@ class BridgeAdapterHandlers:
             return (self.media.status(), "sss")
         if method == "HistorySearch":
             query, limit = args
+            limit = _clamp_search_limit(limit)
             proxy = self.history
             if proxy is None:
                 return (([],), "a(sss)")
-            return ((proxy.search(str(query), int(limit)),), "a(sss)")
+            results = proxy.search(str(query), limit)
+            # Audit (finding #12): history is privacy-sensitive and now
+            # requires polkit authorization; record who queried what.
+            log.info("HistorySearch authorized: pid=%s query_len=%d limit=%d hits=%d",
+                     caller_pid, len(str(query)), limit, len(results))
+            return ((results[:limit],), "a(sss)")
         if method == "BookmarksSearch":
             query, limit = args
+            limit = _clamp_search_limit(limit)
             proxy = self.bookmarks
             if proxy is None:
                 return (([],), "a(ss)")
-            return ((proxy.search(str(query), int(limit)),), "a(ss)")
+            results = proxy.search(str(query), limit)
+            log.info("BookmarksSearch authorized: pid=%s query_len=%d limit=%d hits=%d",
+                     caller_pid, len(str(query)), limit, len(results))
+            return ((results[:limit],), "a(ss)")
         raise LookupError(f"unhandled method {method!r}")
 
 
