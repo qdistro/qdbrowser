@@ -4,6 +4,19 @@ A Qt-based web browser, sibling of [qterminator](../qterminator) and [qdshell](.
 
 PyQt6 + QtWebEngine, plugin-driven, agent-controllable. Targets Vivaldi-class feature density without the Chrome lock-in.
 
+## Role in qdistro
+
+qdbrowser is the first-party browser for qdistro's "one owner, many silos,
+dynamic sessions" model. It is intended to be the browser surface that can
+participate directly in qdistro policy: tab/window identity, password-vault
+approval, page extraction, screenshots, automation, and future cross-silo handoff
+all route through trusted bridge APIs rather than page-controlled DOM alone.
+
+Use qdbrowser when the browser should be part of the qdistro control plane. Use
+[qdchrome-extension](../qdchrome-extension) or
+[qdfirefox-extension](../qdfirefox-extension) when compatibility with upstream
+Chromium/Firefox is the primary requirement.
+
 ## Status
 
 v0.1.0 — early. Core browsing, tabs, recursive splits, side panel, command palette, sessions, content blocker, agent control via MCP.
