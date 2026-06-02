@@ -1,13 +1,37 @@
+# Python
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyc
 *.so
 *.egg-info/
+.eggs/
+*.egg
 .pytest_cache/
 .coverage
 htmlcov/
-build/
-dist/
+
+# Virtual environments
 .venv/
 venv/
-*.swp
+env/
+ENV/
+
+# Build & packaging
+build/
+dist/
+*.whl
+
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor & IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.cache/
+.zed
