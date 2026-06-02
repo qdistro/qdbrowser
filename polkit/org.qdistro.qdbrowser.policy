@@ -130,4 +130,34 @@
     <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
   </action>
 
+  <!-- History / bookmarks search expose privacy-sensitive browsing
+       metadata that can be bulk-exfiltrated (finding #12). They are no
+       longer treated as "open" read-only inventory: the active user
+       must authenticate. Inactive / remote callers require admin. -->
+  <action id="org.qdistro.qdbrowser.history.search">
+    <description>Search qdbrowser history</description>
+    <description xml:lang="en">Search qdbrowser history</description>
+    <message>Authentication is required to search qdbrowser browsing history</message>
+    <message xml:lang="en">Authentication is required to search qdbrowser browsing history</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+  <action id="org.qdistro.qdbrowser.bookmarks.search">
+    <description>Search qdbrowser bookmarks</description>
+    <description xml:lang="en">Search qdbrowser bookmarks</description>
+    <message>Authentication is required to search qdbrowser bookmarks</message>
+    <message xml:lang="en">Authentication is required to search qdbrowser bookmarks</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
 </policyconfig>
