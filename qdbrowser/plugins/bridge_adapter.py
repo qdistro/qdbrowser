@@ -27,6 +27,7 @@ import datetime
 import json
 import logging
 import os
+import queue
 import select
 import subprocess
 import threading
@@ -660,17 +661,103 @@ class BridgeAdapterHandlers:
         self.bookmarks = bookmarks
         self._polkit = polkit
 
-    def dispatch(self, method: str, args: tuple,
-                 caller_pid: Optional[int] = None
-                 ) -> tuple[tuple, str]:
+    def authorize(self, method: str, caller_pid: Optional[int] = None,
+                  caller_start_time: Optional[int] = None) -> None:
+        """Resolve+enforce the polkit gate for ``method``.
+
+        Runs the (potentially slow / interactive) polkit check WITHOUT
+        touching any Qt widget, so it is safe to call from the D-Bus
+        receive thread rather than the GUI thread. Raises
+        ``LookupError`` for an unknown method and ``PermissionError``
+        when polkit denies the action — in which case the caller must
+        NOT proceed to :meth:`invoke`.
+
+        ``caller_start_time`` (the kernel process start time of the
+        caller) is forwarded to the polkit hook so polkit can refuse if
+        the caller PID was recycled between authorization and check.
+        The hook is invoked with ``(action, caller_pid)`` for backward
+        compatibility, and additionally with ``caller_start_time`` as a
+        keyword when it accepts it.
+        """
         action = METHOD_TO_ACTION.get(method)
         if action is None:
             raise LookupError(f"unknown method {method!r}")
-        if not self._polkit(action, caller_pid):
+        if not self._call_polkit(action, caller_pid, caller_start_time):
             # TODO(track-03): rate-limit denied calls per caller PID
             # once the agent-guardrails audit hook lands.
             raise PermissionError(f"polkit denied {action}")
 
+    @staticmethod
+    def method_needs_pkcheck(method: str) -> bool:
+        """True iff ``method`` is gated by a real ``pkcheck`` for an
+        external caller (i.e. its action is not a read-only
+        ``_OPEN_ACTIONS`` inventory call). Used to decide whether a
+        missing caller start time must fail closed."""
+        action = METHOD_TO_ACTION.get(method)
+        return action is not None and action not in _OPEN_ACTIONS
+
+    def _polkit_accepts_start_time(self) -> bool:
+        """Whether the configured polkit hook accepts a
+        ``caller_start_time`` keyword. Computed by signature inspection
+        (cached) so we never have to swallow a TypeError from the hook's
+        own body to discover this."""
+        cached = getattr(self, "_polkit_start_time_ok", None)
+        if cached is not None:
+            return cached
+        accepts = True
+        try:
+            import inspect
+            sig = inspect.signature(self._polkit)
+            params = sig.parameters
+            has_kw = "caller_start_time" in params
+            has_var_kw = any(
+                p.kind is inspect.Parameter.VAR_KEYWORD
+                for p in params.values())
+            accepts = has_kw or has_var_kw
+        except (TypeError, ValueError):
+            # Un-introspectable callable (some C builtins) — assume it
+            # does NOT take the keyword and use the 2-arg form.
+            accepts = False
+        self._polkit_start_time_ok = accepts
+        return accepts
+
+    def _call_polkit(self, action: str, caller_pid: Optional[int],
+                     caller_start_time: Optional[int]) -> bool:
+        """Invoke the polkit hook, passing ``caller_start_time`` when the
+        hook signature accepts it (the default :func:`polkit_check`
+        does). Test/sibling hooks supplying only ``(action, pid)`` keep
+        working unchanged. We decide by inspecting the hook signature
+        rather than catching ``TypeError``, so a ``TypeError`` raised
+        from inside a start-time-aware hook is never silently downgraded
+        to the weaker (no-start-time) check."""
+        if caller_start_time is None or not self._polkit_accepts_start_time():
+            return self._polkit(action, caller_pid)
+        return self._polkit(action, caller_pid,
+                            caller_start_time=caller_start_time)
+
+    def dispatch(self, method: str, args: tuple,
+                 caller_pid: Optional[int] = None,
+                 caller_start_time: Optional[int] = None
+                 ) -> tuple[tuple, str]:
+        """Authorize then invoke ``method`` in one call.
+
+        Convenience wrapper used by unit tests and any in-process
+        caller. The D-Bus receive path instead calls :meth:`authorize`
+        on the receive thread and :meth:`invoke` on the GUI thread so
+        the polkit check never blocks the GUI and the mutating op never
+        runs after an authorization failure.
+        """
+        self.authorize(method, caller_pid, caller_start_time)
+        return self.invoke(method, args, caller_pid=caller_pid)
+
+    def invoke(self, method: str, args: tuple,
+               caller_pid: Optional[int] = None) -> tuple[tuple, str]:
+        """Execute an already-authorized ``method``.
+
+        MUST run on the GUI thread (it touches Qt proxies). Callers are
+        responsible for having passed :meth:`authorize` first; this
+        method does NOT re-check polkit.
+        """
         if method == "TabsList":
             return ((self.tabs.list(),), "a(uss)")
         if method == "TabsOpen":
@@ -770,6 +857,87 @@ def _enabled_config_override() -> Optional[bool]:
             return None
         return bool(value.get("enabled"))
     return bool(value)
+
+
+# --------------------------------------------------------------------- #
+# Outbound-forward worker (keeps D-Bus forwards off the GUI thread)
+# --------------------------------------------------------------------- #
+
+
+class _ForwardWorker:
+    """Single background thread that runs outbound daemon forwards.
+
+    Outbound forwards (download / media state) open a fresh session-bus
+    connection and block up to 5 s. They are triggered from Qt signal
+    handlers (``emit_download_started`` / ``emit_media_state_changed``)
+    which run on the GUI thread — doing the blocking call inline froze
+    the UI whenever a Phase-9e daemon was slow or hung. This worker
+    moves the call off the GUI thread: ``submit`` enqueues a callable
+    and returns immediately; a dedicated daemon thread drains the queue.
+
+    The queue is bounded so a wedged daemon can't grow it without limit;
+    once full, the oldest pending forward is dropped (forwards are
+    best-effort desktop-integration hints, not durable events).
+    """
+
+    _MAX_PENDING = 256
+
+    def __init__(self):
+        self._queue: "queue.Queue" = queue.Queue(self._MAX_PENDING)
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="bridge_adapter_forward")
+        self._thread.start()
+
+    def submit(self, fn: Callable[[], Any]) -> None:
+        """Enqueue ``fn`` for execution on the worker thread.
+
+        Never blocks the caller (the GUI thread). If the queue is full
+        (daemon wedged), drop the oldest pending item to make room so
+        the newest state still gets a chance to be delivered."""
+        if self._thread is None:
+            # Not started (e.g. tests, or no daemons) — run inline so
+            # behaviour is unchanged for callers that never start it.
+            try:
+                fn()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("inline forward failed: %s", exc)
+            return
+        try:
+            self._queue.put_nowait(fn)
+        except queue.Full:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._queue.put_nowait(fn)
+            except queue.Full:
+                log.debug("forward queue full; dropping forward")
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                fn = self._queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                fn()
+            except Exception as exc:  # noqa: BLE001 — never die on a forward
+                log.warning("background forward failed: %s", exc)
+
+    def stop(self, timeout: float = 3.0) -> None:
+        self._stop.set()
+        t = self._thread
+        if t is not None:
+            t.join(timeout=timeout)
+        self._thread = None
 
 
 # --------------------------------------------------------------------- #
@@ -890,6 +1058,8 @@ class BridgeAdapterPlugin(Plugin):
         self._media_tabs: set[int] = set()
         self._recv_thread: Optional[threading.Thread] = None
         self._dispatch_helper = _DispatchHelper()
+        # Runs outbound daemon forwards off the GUI thread.
+        self._forward_worker = _ForwardWorker()
         self._stop = threading.Event()
 
     @property
@@ -923,13 +1093,22 @@ class BridgeAdapterPlugin(Plugin):
                                state: int = 0, **kw) -> None:
         # Step-4: also forward to the Downloads daemon so the admin
         # notification area sees qdbrowser downloads. Best-effort; the
-        # forwarder swallows transport errors.
-        if self.forwarder is not None:
-            self.forwarder.notify_download(
+        # forwarder swallows transport errors. The actual D-Bus call
+        # (which can block up to 5 s) runs on the forward worker thread,
+        # NOT the GUI thread that invoked this signal handler — snapshot
+        # the args now and hand them off.
+        if self.forwarder is None:
+            return
+        fwd = self.forwarder
+        url = str(kw.get("url", ""))
+        mime = str(kw.get("mime", ""))
+        total_bytes = int(kw.get("total_bytes", 0) or 0)
+        bytes_received = int(kw.get("bytes_received", 0) or 0)
+        self._forward_worker.submit(
+            lambda: fwd.notify_download(
                 download_id, filename, state,
-                url=str(kw.get("url", "")), mime=str(kw.get("mime", "")),
-                total_bytes=int(kw.get("total_bytes", 0) or 0),
-                bytes_received=int(kw.get("bytes_received", 0) or 0))
+                url=url, mime=mime,
+                total_bytes=total_bytes, bytes_received=bytes_received))
 
     def emit_media_state_changed(self, state: str, *, title: str = "",
                                  artist: str = "",
@@ -937,15 +1116,21 @@ class BridgeAdapterPlugin(Plugin):
         self._emit_signal("MediaStateChanged", (str(state),), "s")
         # Step-4: republish via the MPRIS daemon. Pull the current
         # title/artist off the media proxy so the admin widget shows
-        # metadata, not just a bare state.
-        if self.forwarder is not None:
-            if self.media_proxy is not None:
-                proxy_title, proxy_artist, _ = self.media_proxy.status()
-                title = title or proxy_title
-                artist = artist or proxy_artist
-            self.forwarder.publish_media(
+        # metadata, not just a bare state. The blocking D-Bus call runs
+        # on the forward worker thread, not the GUI thread — snapshot
+        # the metadata here (on the GUI thread, where reading the proxy
+        # is safe) and hand the call off.
+        if self.forwarder is None:
+            return
+        fwd = self.forwarder
+        if self.media_proxy is not None:
+            proxy_title, proxy_artist, _ = self.media_proxy.status()
+            title = title or proxy_title
+            artist = artist or proxy_artist
+        self._forward_worker.submit(
+            lambda: fwd.publish_media(
                 title=title, artist=artist, state=str(state),
-                tab_id=tab_id)
+                tab_id=tab_id))
 
     # -- lifecycle ----
 
@@ -1008,6 +1193,9 @@ class BridgeAdapterPlugin(Plugin):
         # client on first use; only reachable once daemons are present
         # (this whole activate() path is gated by _daemons_available()).
         self.forwarder = DaemonForwarder()
+        # Start the worker that runs the (blocking) forwards off the GUI
+        # thread, so a slow/hung daemon can't freeze the UI.
+        self._forward_worker.start()
 
         self._handlers = BridgeAdapterHandlers(
             self.tabs_proxy, self.pages_proxy,
@@ -1021,6 +1209,10 @@ class BridgeAdapterPlugin(Plugin):
         if not self._claim_bus_name():
             log.warning("bridge_adapter could not claim a D-Bus name; "
                         "staying inactive")
+            # We started the forward worker above; tear it back down so a
+            # failed activation doesn't leak the thread (deactivate()
+            # early-returns while inactive and would never stop it).
+            self._forward_worker.stop()
             return
 
         # Subscribe to window-level signals so we emit outbound D-Bus
@@ -1079,6 +1271,8 @@ class BridgeAdapterPlugin(Plugin):
             if self._recv_thread is not None:
                 self._recv_thread.join(timeout=3.0)
                 self._recv_thread = None
+            # Drain + stop the outbound-forward worker.
+            self._forward_worker.stop()
             self._handlers = None
             self._bus_name = None
 
@@ -1337,15 +1531,41 @@ class BridgeAdapterPlugin(Plugin):
             if iface != QDBROWSER_IFACE or path != QDBROWSER_PATH:
                 continue
 
-            # Resolve the caller's PID for polkit gating, then
-            # dispatch on the main thread so Qt widgets are never
-            # touched from this background thread.
+            # Resolve the caller's PID for polkit gating. The polkit
+            # check (which may run an interactive ``pkcheck`` with a
+            # 15 s cap) happens HERE on the receive thread — never on
+            # the GUI thread — so an auth prompt can't freeze the UI and
+            # can't outlive the main-thread dispatch timeout. Only after
+            # authorization succeeds do we bounce the actual op (which
+            # touches Qt widgets) onto the main thread. If authorization
+            # fails the op never runs.
             sender = fields.get(HeaderFields.sender)
             try:
                 caller_pid = self._resolve_sender_pid(sender)
+                caller_start = None
+                if caller_pid is not None:
+                    caller_start = self._resolve_sender_start_time(
+                        caller_pid)
+                    # Fail CLOSED for an external caller on a
+                    # pkcheck-gated action when we can't bind the check
+                    # to the caller's start time: without it pkcheck
+                    # matches on the bare PID, reopening the PID-reuse
+                    # window the start_time guard exists to close. (Read-
+                    # only _OPEN_ACTIONS skip pkcheck entirely, so they
+                    # never needed a start time and are not denied here.)
+                    if (caller_start is None
+                            and self._handlers.method_needs_pkcheck(
+                                member)):
+                        raise PermissionError(
+                            "could not resolve caller start time; "
+                            "refusing pkcheck-gated call to avoid a "
+                            "PID-reuse race")
+                self._handlers.authorize(
+                    member, caller_pid=caller_pid,
+                    caller_start_time=caller_start)
                 _member, _body, _pid = member, msg.body, caller_pid
                 body, sig = self._dispatch_helper.call_on_main_thread(
-                    lambda: self._handlers.dispatch(
+                    lambda: self._handlers.invoke(
                         _member, _body, caller_pid=_pid))
                 reply = new_method_return(msg, sig, body)
             except PermissionError as exc:
@@ -1408,3 +1628,36 @@ class BridgeAdapterPlugin(Plugin):
             log.debug("could not resolve PID for %s: %s", sender, exc)
         raise PermissionError(
             f"could not resolve PID for D-Bus sender {sender!r}")
+
+    @staticmethod
+    def _resolve_sender_start_time(caller_pid: Optional[int]
+                                   ) -> Optional[int]:
+        """Read the caller PID's kernel start-time (clock ticks since
+        boot) from ``/proc/<pid>/stat`` field 22.
+
+        Passed to polkit as the second component of ``pid,start_time``
+        so polkit refuses the check if the PID was recycled between the
+        bus daemon resolving it and the authorization check (defeating a
+        PID-reuse race). Best-effort: any failure returns ``None`` and
+        authorization proceeds with the PID alone (no regression vs. the
+        prior behaviour, which never passed a start time at all)."""
+        if caller_pid is None:
+            return None
+        try:
+            with open(f"/proc/{int(caller_pid)}/stat", "rb") as fh:
+                data = fh.read()
+            # comm (field 2) is parenthesised and may contain spaces or
+            # ')'; split on the LAST ')' so the remaining fields align.
+            rparen = data.rfind(b")")
+            if rparen < 0:
+                return None
+            rest = data[rparen + 2:].split()
+            # After comm, field 3 (state) is rest[0]; starttime is
+            # field 22, i.e. rest[22 - 3] == rest[19].
+            if len(rest) <= 19:
+                return None
+            return int(rest[19])
+        except (OSError, ValueError, IndexError) as exc:
+            log.debug("could not read start time for pid=%s: %s",
+                      caller_pid, exc)
+            return None
