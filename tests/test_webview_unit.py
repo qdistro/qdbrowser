@@ -65,6 +65,25 @@ def test_profile_name_default(window):
     assert window._active_webview.profile_name == "default"
 
 
+def test_default_webview_not_off_the_record(window):
+    # The persistent "default" profile keeps data on disk.
+    assert window._active_webview.is_off_the_record is False
+
+
+def test_private_webview_is_off_the_record(window):
+    # A "private" tab is backed by an off-the-record QWebEngineProfile.
+    wv = window.new_tab(url="about:blank", profile_name="private")
+    assert wv.profile_name == "private"
+    assert wv.is_off_the_record is True
+
+
+def test_off_the_record_reads_live_profile_flag(window):
+    # The flag must follow the real Qt profile, not just the name string,
+    # so a private profile wired in under another name still reports OTR.
+    wv = window._active_webview
+    assert wv.is_off_the_record == bool(wv._profile.isOffTheRecord())
+
+
 def test_can_go_back_false_initially(window):
     assert window._active_webview.can_go_back() is False
 

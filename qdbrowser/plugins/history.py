@@ -133,6 +133,10 @@ class HistoryPanel(QWidget):
 class HistoryPlugin(SidePanelProvider, PageObserver, CommandProvider):
     name = "history"
     capabilities = ["side_panel", "page_observer", "command_provider"]
+    # Visits are written to ``history.jsonl``; never record private
+    # (off-the-record) browsing — the window observer wiring honours
+    # this flag and skips OTR webviews.
+    persistent = True
     panel_id = "history"
     panel_label = "History"
     panel_icon = "H"
@@ -153,6 +157,12 @@ class HistoryPlugin(SidePanelProvider, PageObserver, CommandProvider):
         # Update the most recent matching record's title and persist it
         # (the JSONL log is append-only, so a fixup line wins on read
         # via "last wins" in ``_Store._load``).
+        #
+        # Defence in depth: the window normally never wires this observer
+        # to off-the-record views, but never persist anything for a
+        # private webview even if something does reach here.
+        if getattr(webview, "is_off_the_record", False):
+            return
         if not self._store._records:
             return
         last = self._store._records[-1]
@@ -166,6 +176,11 @@ class HistoryPlugin(SidePanelProvider, PageObserver, CommandProvider):
                     "could not persist title: %s", exc)
 
     def on_navigation(self, webview, url):
+        # Defence in depth: never record private (off-the-record)
+        # browsing, even if the observer somehow gets wired to an OTR
+        # webview.
+        if getattr(webview, "is_off_the_record", False):
+            return
         self._store.add(url, webview.title())
         if self._panel:
             self._panel._refresh()

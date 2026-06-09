@@ -90,9 +90,18 @@ class CommandProvider(Plugin):
 
 
 class PageObserver(Plugin):
-    """Plugin receives page lifecycle events."""
+    """Plugin receives page lifecycle events.
+
+    ``persistent`` declares that this observer records or otherwise
+    persists page activity to durable storage (a history log, on-disk
+    index, etc.). Persistent observers are NOT wired to off-the-record
+    (private) webviews, so private browsing leaves no trace. Ephemeral
+    observers (dark-mode injection, clipboard tagging, content blocking)
+    leave this False so they keep running in private mode.
+    """
 
     capabilities = ["page_observer"]
+    persistent = False
 
     def on_navigation(self, webview, url):
         pass

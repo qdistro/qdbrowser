@@ -57,6 +57,13 @@ _REDACT_PARAM_KEYS = frozenset({
     "png_b64",  # never in request, but defence in depth
 })
 
+# URL-bearing params. These are normally kept in the audit log (the audit
+# records *where* an agent navigated), but they must be redacted when the
+# RPC targets a private (off-the-record) profile/tab — the journal is
+# durable on-disk storage and a private URL there is the same class of
+# leak as recording it to history.jsonl.
+_URL_PARAM_KEYS = frozenset({"url"})
+
 from PyQt6.QtCore import (
     QBuffer, QByteArray, QEvent, QIODevice, QObject, QPoint, QPointF,
     QSize, QSocketNotifier, Qt, QTimer, QUrl,
@@ -129,18 +136,22 @@ def _peer_creds(conn: socket.socket) -> tuple[Optional[int], Optional[int]]:
         return None, None
 
 
-def _redact_params(params):
+def _redact_params(params, redact_url=False):
     """Strip sensitive values from RPC params for audit logging.
 
     Replaces values under _REDACT_PARAM_KEYS with ``<redacted:Nb>`` so the
     audit log records the operation shape without leaking JS source, typed
-    text, or key sequences.
+    text, or key sequences. When ``redact_url`` is set (the RPC targets a
+    private/off-the-record profile or tab), URL-bearing params are also
+    redacted so a private navigation leaves no durable trace in the
+    journal.
     """
     if not isinstance(params, dict):
         return params
     out = {}
     for k, v in params.items():
-        if k in _REDACT_PARAM_KEYS and v is not None:
+        redact = k in _REDACT_PARAM_KEYS or (redact_url and k in _URL_PARAM_KEYS)
+        if redact and v is not None:
             try:
                 size = len(v) if not isinstance(v, (int, float, bool)) else 0
             except TypeError:
@@ -681,6 +692,33 @@ class _AgentServer(QObject):
         for fd, client in list(self._clients.items()):
             client.send_raw(line)
 
+    def _targets_off_the_record(self, method, params) -> bool:
+        """True when an RPC is bound to a private (off-the-record) profile
+        or tab, so its URL params must be kept out of the audit journal.
+
+        Fail closed: if a ``tab_id`` is supplied but can't be resolved,
+        treat it as private rather than risk logging a private URL.
+        """
+        if not isinstance(params, dict):
+            return False
+        # open_tab carries the profile name directly.
+        prof = params.get("profile")
+        if isinstance(prof, str) and prof == "private":
+            return True
+        # Tab-targeted RPCs (navigate, etc.) reference an existing tab.
+        if "tab_id" in params:
+            try:
+                wv = self._plugin._get_webview(params.get("tab_id"))
+            except Exception:
+                # Unresolvable / invalid tab id — fail closed only if a
+                # URL would otherwise be logged.
+                return any(k in params for k in _URL_PARAM_KEYS)
+            try:
+                return bool(wv.is_off_the_record)
+            except Exception:
+                return True
+        return False
+
     def handle(self, client: _Client, req: dict) -> dict:
         method = req.get("method")
         params = req.get("params") or {}
@@ -700,13 +738,19 @@ class _AgentServer(QObject):
         # Audit log every RPC before policy/dispatch so denied attempts
         # are also captured. Tag matches the logger name for
         # ``journalctl --user -t qdbrowser.agent_control``.
+        # Redact URL params when the RPC targets a private (OTR) profile
+        # or tab — the journal is durable storage and a private URL there
+        # is the same leak as recording it to history.
+        redact_url = (self._targets_off_the_record(method, params)
+                      if isinstance(params, dict) else False)
         log.info(
             "AGENT_RPC uid=%d fd=%d pid=%s exe=%s method=%s params=%s",
             os.getuid(), client.fd,
             client.handshake_pid or client.pid,
             client.handshake_exe or client.exe_path,
             method,
-            _redact_params(params) if isinstance(params, dict) else params)
+            _redact_params(params, redact_url=redact_url)
+            if isinstance(params, dict) else params)
         if not isinstance(params, dict):
             return _err(rid, -32602, "params must be an object")
         # Don't let an agent pass a positional-conflicting kwarg.

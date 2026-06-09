@@ -443,7 +443,18 @@ class MainWindow(QMainWindow):
         # disconnect them when the plugin is disabled. Otherwise the
         # lambdas keep deactivated plugins alive and they keep
         # receiving events.
+        #
+        # Private (off-the-record) webviews must leave no persistent
+        # trace, so observers that record/persist page activity (history
+        # log, etc.) are not wired to them. Ephemeral observers
+        # (dark-mode, clipboard tagging, content blocking) are
+        # ``persistent = False`` and keep running in private mode.
+        is_otr = bool(getattr(wv, "is_off_the_record", False))
         for obs in self.plugins.get_page_observers():
+            if is_otr and getattr(obs, "persistent", False):
+                log.debug("skipping persistent observer %s for OTR webview",
+                          type(obs).__name__)
+                continue
             try:
                 s1 = wv.url_changed.connect(
                     lambda _wv, u, _obs=obs: _obs.on_navigation(_wv, u))

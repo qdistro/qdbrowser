@@ -251,7 +251,7 @@ class DownloadsPanel(QWidget):
         self._list.itemActivated.connect(self._on_activated)
 
     def add_active(self, request: QWebEngineDownloadRequest,
-                   quarantined: bool = False):
+                   quarantined: bool = False, private: bool = False):
         widget = _DownloadItem(request, quarantined=quarantined)
         item = QListWidgetItem()
         item.setSizeHint(widget.sizeHint())
@@ -261,14 +261,26 @@ class DownloadsPanel(QWidget):
         self._list.setItemWidget(item, widget)
         self._items.append((item, widget))
 
-        # When the request finishes, persist to history.
-        request.isFinishedChanged.connect(
-            lambda r=request, w=widget: self._on_finished_persist(r, w))
+        # When the request finishes, persist to history — but never for a
+        # private (off-the-record) download: it lives only in this
+        # session's panel and is gone when the window closes.
+        if not private:
+            request.isFinishedChanged.connect(
+                lambda r=request, w=widget: self._on_finished_persist(r, w))
 
     def _on_finished_persist(self, request, widget):
         if not request.isFinished():
             return
         if request.state() != QWebEngineDownloadRequest.DownloadState.DownloadCompleted:
+            return
+        # Defence in depth: never write a private download to disk
+        # history even if this slot is somehow connected for an OTR
+        # request. Fail closed — if we can't tell the profile, skip the
+        # write rather than risk leaking a private origin.
+        try:
+            if request.page().profile().isOffTheRecord():
+                return
+        except Exception:
             return
         entry = {
             "path": widget.path(),
@@ -377,6 +389,13 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
     def _on_download_requested(self, request: QWebEngineDownloadRequest):
         qs = self._quarantine
 
+        # Private (off-the-record) downloads must leave no durable record
+        # of where they came from: no source URL / profile in the
+        # quarantine DB or sidecar, no downloads.json history entry, no
+        # URL-bearing bridge events. The file is still quarantined and
+        # scanned (operational security), just without the origin trail.
+        otr = self._request_is_off_the_record(request)
+
         row_id = None  # set if quarantine intake succeeds
 
         # Check auto_release_domains: if the download URL's host is in
@@ -389,8 +408,10 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
                 if auto_domains:
                     host = request.url().host() if hasattr(request, "url") else ""
                     if host and host in auto_domains:
+                        # Never log a private download's host to the
+                        # journal; redact it for OTR requests.
                         log.info("auto-release domain %r, skipping quarantine",
-                                 host)
+                                 "<private>" if otr else host)
                         qs = None
             except Exception:
                 pass
@@ -410,18 +431,25 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
                 request.setDownloadDirectory(os.path.dirname(q_path))
                 request.setDownloadFileName(os.path.basename(q_path))
 
-                source_url = (request.url().toString()
-                              if hasattr(request, "url") else "")
+                # For private downloads, never persist the origin URL or
+                # profile — store empty strings so the file is still
+                # tracked/scanned but leaves no source trail.
+                source_url = ""
+                if not otr:
+                    source_url = (request.url().toString()
+                                  if hasattr(request, "url") else "")
                 content_type = ""
                 try:
                     content_type = request.mimeType() or ""
                 except Exception:
                     pass
                 profile_name = ""
-                try:
-                    profile_name = request.page().profile().storageName() or ""
-                except Exception:
-                    pass
+                if not otr:
+                    try:
+                        profile_name = (
+                            request.page().profile().storageName() or "")
+                    except Exception:
+                        pass
 
                 row_id = qs.record(
                     quarantine_path=q_path,
@@ -475,17 +503,21 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
         is_quarantined = qs is not None and row_id is not None
 
         if self._panel:
-            self._panel.add_active(request, quarantined=is_quarantined)
-        try:
-            request.isFinishedChanged.connect(
-                lambda _r=request: self._notify_bridge_finished(_r))
-        except Exception as exc:
-            log.warning("bridge download-finished hook failed: %s", exc)
-        # Notify bridge_adapter (if loaded and active) so it can fan
-        # the event out over D-Bus to qdistro daemons. We look it up
-        # via the plugin manager rather than importing the module so
-        # qdbrowser still works when bridge_adapter is disabled.
-        self._notify_bridge_started(request)
+            self._panel.add_active(request, quarantined=is_quarantined,
+                                   private=otr)
+        # Bridge events carry the source URL out over D-Bus; suppress
+        # them entirely for private downloads.
+        if not otr:
+            try:
+                request.isFinishedChanged.connect(
+                    lambda _r=request: self._notify_bridge_finished(_r))
+            except Exception as exc:
+                log.warning("bridge download-finished hook failed: %s", exc)
+            # Notify bridge_adapter (if loaded and active) so it can fan
+            # the event out over D-Bus to qdistro daemons. We look it up
+            # via the plugin manager rather than importing the module so
+            # qdbrowser still works when bridge_adapter is disabled.
+            self._notify_bridge_started(request)
         request.accept()
 
     def _set_direct_download_dir(self, request: QWebEngineDownloadRequest):
@@ -522,6 +554,21 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
         except Exception as exc:
             log.warning("quarantine post-finish failed id=%s: %s",
                         row_id, exc)
+
+    @staticmethod
+    def _request_is_off_the_record(
+            request: QWebEngineDownloadRequest) -> bool:
+        """True when the download originates from a private (off-the-record)
+        profile. Such downloads must not leave a durable trace of their
+        source URL or profile (history log, quarantine metadata/sidecar,
+        bridge events) — the file itself may still be quarantined and
+        scanned, that is operational security, not a privacy record.
+        Fail closed: any error treats the request as private.
+        """
+        try:
+            return bool(request.page().profile().isOffTheRecord())
+        except Exception:
+            return True
 
     @staticmethod
     def _download_id(request: QWebEngineDownloadRequest) -> int:

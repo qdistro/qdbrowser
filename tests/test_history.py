@@ -101,3 +101,87 @@ def test_plugin_on_navigation_appends(window, tmp_path, monkeypatch):
     plug.on_navigation(FakeWv(), "https://navtest.example")
     urls = [r["url"] for r in plug._store.all()]
     assert "https://navtest.example" in urls
+
+
+def test_history_plugin_marked_persistent():
+    import qdbrowser.plugins.history as h
+    assert h.HistoryPlugin.persistent is True
+
+
+def test_page_observer_default_not_persistent():
+    from qdbrowser.plugin import PageObserver
+    assert PageObserver.persistent is False
+
+
+def test_plugin_on_navigation_skips_off_the_record(window, tmp_path,
+                                                   monkeypatch):
+    # Defence in depth: even if the observer is reached for a private
+    # webview, nothing is persisted.
+    import qdbrowser.plugins.history as h
+    monkeypatch.setattr(h, "HISTORY_PATH", str(tmp_path / "h.jsonl"))
+    plug = h.HistoryPlugin()
+    plug.activate(window)
+
+    class PrivateWv:
+        is_off_the_record = True
+
+        def title(self):
+            return "Secret"
+
+    plug.on_navigation(PrivateWv(), "https://private.example")
+    assert plug._store.all() == []
+    assert not os.path.exists(tmp_path / "h.jsonl")
+
+
+def test_plugin_on_title_changed_skips_off_the_record(window, tmp_path,
+                                                      monkeypatch):
+    import qdbrowser.plugins.history as h
+    monkeypatch.setattr(h, "HISTORY_PATH", str(tmp_path / "h.jsonl"))
+    plug = h.HistoryPlugin()
+    plug.activate(window)
+    plug._store._records.append({"url": "https://x.test", "title": "",
+                                 "ts": 0})
+
+    class PrivateWv:
+        is_off_the_record = True
+
+        def url(self):
+            return "https://x.test"
+
+    plug.on_title_changed(PrivateWv(), "Should Not Persist")
+    # The pre-existing record's title is untouched.
+    assert plug._store._records[-1]["title"] == ""
+
+
+def test_private_tab_does_not_wire_history_observer(window, tmp_path,
+                                                    monkeypatch):
+    """A private (OTR) tab must not append to the history log on
+    navigation, while a normal tab still does."""
+    import qdbrowser.plugins.history as h
+    monkeypatch.setattr(h, "HISTORY_PATH", str(tmp_path / "h.jsonl"))
+
+    plug = h.HistoryPlugin()
+    plug.persistent = True
+    plug._store = h._Store()
+
+    # Drive _connect_webview through this single persistent observer.
+    monkeypatch.setattr(window.plugins, "get_page_observers",
+                        lambda: [plug])
+    monkeypatch.setattr(window.plugins, "get_url_interceptors", lambda: [])
+
+    private = window.new_tab(url="about:blank", profile_name="private")
+    normal = window.new_tab(url="about:blank", profile_name="default")
+    assert private.is_off_the_record is True
+    assert normal.is_off_the_record is False
+
+    # The persistent history observer must be wired to the normal tab but
+    # NOT to the private one.
+    conns = window._plugin_connections.get(plug, [])
+    assert conns, "history observer should be wired to the normal tab"
+
+    # Simulate navigations on both tabs; only the normal tab is recorded.
+    plug.on_navigation(private, "https://secret.example")
+    plug.on_navigation(normal, "https://public.example")
+    urls = [r["url"] for r in plug._store.all()]
+    assert "https://public.example" in urls
+    assert "https://secret.example" not in urls

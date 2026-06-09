@@ -77,6 +77,85 @@ def test_redact_preserves_none():
     assert out["tab_id"] == 5
 
 
+def test_redact_keeps_url_by_default():
+    from qdbrowser.plugins.agent_control import _redact_params
+    out = _redact_params({"url": "https://example.com"})
+    assert out["url"] == "https://example.com"
+
+
+def test_redact_strips_url_for_private():
+    from qdbrowser.plugins.agent_control import _redact_params
+    out = _redact_params({"url": "https://secret.example"}, redact_url=True)
+    assert out["url"].startswith("<redacted:")
+    assert "secret.example" not in out["url"]
+
+
+def test_audit_log_redacts_private_open_tab_url(fresh_config, caplog):
+    """open_tab with profile=private must not log the private URL."""
+    from qdbrowser.plugins.agent_control import (
+        AgentControlPlugin, _AgentServer)
+
+    plug = AgentControlPlugin()
+    server = _AgentServer(plug, window=None)
+    req = {
+        "jsonrpc": "2.0", "id": 1,
+        "method": "open_tab",
+        "params": {"url": "https://secret.example/page",
+                   "profile": "private"},
+    }
+    with caplog.at_level(logging.INFO, logger="qdbrowser.agent_control"):
+        server.handle(_StubClient(), req)
+    rpc_lines = [r.message for r in caplog.records if "AGENT_RPC " in r.message]
+    joined = "\n".join(rpc_lines)
+    assert rpc_lines
+    assert "secret.example" not in joined
+    assert "<redacted:" in joined
+    # The profile name (the operation shape) is still visible.
+    assert "private" in joined
+
+
+def test_audit_log_keeps_normal_open_tab_url(fresh_config, caplog):
+    """A default-profile open_tab still records the URL for audit value."""
+    from qdbrowser.plugins.agent_control import (
+        AgentControlPlugin, _AgentServer)
+
+    plug = AgentControlPlugin()
+    server = _AgentServer(plug, window=None)
+    req = {
+        "jsonrpc": "2.0", "id": 1,
+        "method": "open_tab",
+        "params": {"url": "https://public.example/page",
+                   "profile": "default"},
+    }
+    with caplog.at_level(logging.INFO, logger="qdbrowser.agent_control"):
+        server.handle(_StubClient(), req)
+    rpc_lines = [r.message for r in caplog.records if "AGENT_RPC " in r.message]
+    joined = "\n".join(rpc_lines)
+    assert "public.example" in joined
+
+
+def test_audit_redacts_url_for_unresolvable_tab(fresh_config, caplog):
+    """navigate to an unknown tab_id with a url fails closed: the URL is
+    redacted rather than risk logging a private destination."""
+    from qdbrowser.plugins.agent_control import (
+        AgentControlPlugin, _AgentServer)
+
+    plug = AgentControlPlugin()
+    server = _AgentServer(plug, window=None)
+    req = {
+        "jsonrpc": "2.0", "id": 1,
+        "method": "navigate",
+        "params": {"tab_id": 999999, "url": "https://maybe-private.example"},
+    }
+    with caplog.at_level(logging.INFO, logger="qdbrowser.agent_control"):
+        server.handle(_StubClient(), req)
+    rpc_lines = [r.message for r in caplog.records if "AGENT_RPC " in r.message]
+    joined = "\n".join(rpc_lines)
+    assert rpc_lines
+    assert "maybe-private.example" not in joined
+    assert "<redacted:" in joined
+
+
 def test_redact_passthrough_non_dict():
     from qdbrowser.plugins.agent_control import _redact_params
     assert _redact_params(["a", "b"]) == ["a", "b"]

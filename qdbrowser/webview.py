@@ -366,6 +366,25 @@ class WebView(QWidget):
         return self._profile_name
 
     @property
+    def is_off_the_record(self) -> bool:
+        """True when this view is backed by an off-the-record (private)
+        profile, i.e. nothing it does should be persisted to disk.
+
+        Reads the live ``QWebEngineProfile`` flag rather than trusting
+        the ``profile_name`` string, so the answer is correct even if a
+        profile is wired up by some path other than ``get_profile`` (and
+        so a renamed/aliased private profile can't slip past privacy
+        gates).
+        """
+        try:
+            return bool(self._profile.isOffTheRecord())
+        except Exception:
+            # Fall back to the name convention if the Qt accessor is
+            # unavailable; fail closed toward "private" only for the
+            # known private name, never the reverse.
+            return self._profile_name == "private"
+
+    @property
     def stable_id(self) -> int:
         """Process-unique webview id, safe to expose to agents."""
         return self._stable_id
