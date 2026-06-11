@@ -319,6 +319,98 @@ def test_release_uses_pkcheck_when_authorized_arg_none(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# release defence-in-depth (callable without the controller)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.cheat_aware(
+    protects="release() refuses a forged row whose quarantine_path is a "
+             "symlink, even when the symlink itself sits inside the "
+             "quarantine dir (so _within_dir is satisfied) — the isfile/"
+             "islink check is the only thing standing between a single "
+             "approval and exfiltrating an arbitrary file the symlink "
+             "points at (e.g. ~/.ssh/id_rsa)",
+    severity="medium",
+    cheats=[
+        "drop the os.path.islink(src) clause from the refusal",
+        "rely on _within_dir alone (realpath of an in-dir symlink to an "
+        "in-dir target still passes, so this would slip through)",
+        "make the symlink the assertion target so it 'releases' green",
+    ],
+    consequence="a malicious/corrupt row turns the one polkit-approved "
+                "release into a copy of any file readable by the user out "
+                "of the sandbox",
+)
+def test_release_refuses_symlink_quarantine_path(tmp_path):
+    """A symlink as the quarantine_path must be refused by the
+    isfile/islink guard. Crucially the symlink lives *inside* the
+    quarantine dir and points at a regular file *inside* the quarantine
+    dir, so _within_dir() is satisfied (realpath stays in-dir) — only the
+    explicit islink() check can catch it."""
+    from qdbrowser.quarantine import release
+    store = _make_store(tmp_path)
+    # Real target file, inside the quarantine dir.
+    secret = os.path.join(store.directory, "secret.bin")
+    with open(secret, "wb") as f:
+        f.write(b"sensitive")
+    # Symlink, also inside the quarantine dir, pointing at the target.
+    link = os.path.join(store.directory, "link.bin")
+    os.symlink(secret, link)
+    # Sanity: the link resolves inside the dir, so _within_dir passes and
+    # the only remaining defence is the islink/isfile guard.
+    assert store._within_dir(link) is True
+    row_id = store.record(quarantine_path=link, filename="link.bin",
+                          source_url="https://x/", scan_result="clean")
+    out_dir = tmp_path / "Downloads"
+    result = release(store, row_id, str(out_dir), authorized=True)
+    assert result is None                       # refused
+    assert os.path.islink(link)                 # symlink untouched
+    assert os.path.exists(secret)               # target not moved
+    assert not out_dir.exists() or not any(out_dir.iterdir())
+    store.close()
+
+
+@pytest.mark.cheat_aware(
+    protects="release() re-sanitizes the stored filename so a forged/legacy "
+             "row whose filename contains path traversal lands INSIDE "
+             "release_dir, not at an attacker-chosen absolute path",
+    severity="medium",
+    cheats=[
+        "drop the _sanitize_name(row['filename']) call on the release path",
+        "join the raw row filename onto release_dir",
+        "assert only result is not None without checking where it landed",
+    ],
+    consequence="a release writes an executable into ~/.config/autostart or "
+                "/etc/cron.d via ../../ traversal on a single approval",
+)
+def test_release_sanitizes_traversal_filename(tmp_path):
+    """The quarantine_path is a legitimate in-dir file, but the stored
+    `filename` is a traversal payload. release() must basename/sanitize it
+    so the moved file stays inside release_dir."""
+    from qdbrowser.quarantine import release
+    store = _make_store(tmp_path)
+    qpath = os.path.join(store.directory, "real.bin")
+    with open(qpath, "wb") as f:
+        f.write(b"payload")
+    evil_name = "../../../etc/cron.d/evil"
+    row_id = store.record(quarantine_path=qpath, filename=evil_name,
+                          source_url="https://x/", scan_result="clean")
+    out_dir = tmp_path / "Downloads"
+    result = release(store, row_id, str(out_dir), authorized=True)
+    assert result is not None                   # the move succeeds...
+    # ...but lands inside release_dir, with separators stripped.
+    real_out = os.path.realpath(str(out_dir))
+    real_result = os.path.realpath(result)
+    assert real_result == real_out or real_result.startswith(
+        real_out + os.sep)
+    assert os.path.basename(result) == "evil"   # _sanitize_name reduction
+    # Nothing escaped to the traversal target.
+    assert not os.path.exists(
+        os.path.join(str(tmp_path), "etc", "cron.d", "evil"))
+    store.close()
+
+
+# ---------------------------------------------------------------------------
 # delete
 # ---------------------------------------------------------------------------
 
