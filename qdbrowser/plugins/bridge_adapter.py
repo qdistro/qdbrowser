@@ -266,6 +266,11 @@ class TabsProxy:
             if not views:
                 continue
             wv = views[0]
+            # 02/S9: never expose private (off-the-record) tabs to the bridge.
+            # An agent/extension must not learn a private tab exists, its
+            # title, or its URL.
+            if getattr(wv, "is_off_the_record", False):
+                continue
             try:
                 tid = int(getattr(wv, "stable_id",
                                   getattr(wv, "_stable_id", 0)))
@@ -294,6 +299,18 @@ class TabsProxy:
             for wv in split.find_webviews():
                 if int(getattr(wv, "stable_id",
                                getattr(wv, "_stable_id", -1))) == int(tab_id):
+                    # 02/S9: refuse to close a private (off-the-record) tab.
+                    # Hiding it from TabsList is not an authorization boundary
+                    # (stable ids are monotonic and guessable), so the close
+                    # path must enforce the boundary itself. Fail closed if the
+                    # privacy flag can't be read.
+                    try:
+                        otr = bool(getattr(wv, "is_off_the_record", False))
+                    except Exception:
+                        otr = True
+                    if otr:
+                        raise PermissionError(
+                            "close denied for private (off-the-record) tab")
                     win._on_tab_close_requested(i)
                     return True
         return False
@@ -331,6 +348,12 @@ class PagesProxy:
         wv = self._find_webview(tab_id)
         if wv is None:
             raise LookupError(f"no tab {tab_id}")
+        # 02/S9: refuse to extract content from a private (off-the-record) tab.
+        # PageExtract is the bridge's read-the-page surface; a private tab's
+        # text/HTML/selection must never leave the browser via an agent.
+        if getattr(wv, "is_off_the_record", False):
+            raise PermissionError(
+                "page extract denied for private (off-the-record) tab")
         title = wv.title() if callable(getattr(wv, "title", None)) else ""
         url = wv.url() if callable(getattr(wv, "url", None)) else ""
         # JS expressions for each mode — mirror agent_control verbs.
@@ -370,10 +393,20 @@ class DownloadsProxy:
         if panel is None:
             return out
         # Active items first, then a slice of recent history.
+        is_otr = getattr(plug, "_request_is_off_the_record", None)
         for idx, (_item, widget) in enumerate(getattr(panel, "_items", [])):
             try:
-                path = widget.path()
                 req = getattr(widget, "_request", None)
+                # 02/S9: never expose a private (off-the-record) download. Use
+                # the marker set in add_active; if it is somehow missing, derive
+                # it from the live request (fail closed — treat unknown as
+                # private rather than leak it).
+                marker = getattr(widget, "_private", None)
+                if marker is None and is_otr is not None:
+                    marker = is_otr(req)
+                if marker:
+                    continue
+                path = widget.path()
                 state = req.state() if req is not None else 0
                 if hasattr(state, "value"):
                     state = state.value
@@ -1342,6 +1375,11 @@ class BridgeAdapterPlugin(Plugin):
     # -- window signal handlers ----
 
     def _on_webview_added(self, wv) -> None:
+        # 02/S9: do not announce private (off-the-record) tabs over the bridge.
+        # A TabAdded signal would leak the existence + URL of a private tab to
+        # any subscribed agent/extension.
+        if getattr(wv, "is_off_the_record", False):
+            return
         try:
             tid = int(getattr(wv, "stable_id",
                               getattr(wv, "_stable_id", 0)))
@@ -1356,6 +1394,16 @@ class BridgeAdapterPlugin(Plugin):
             tid = int(getattr(wv, "stable_id",
                               getattr(wv, "_stable_id", 0)))
         except Exception:
+            return
+        # 02/S9: a private (off-the-record) tab was never announced (TabAdded is
+        # suppressed) and never had media wired, so it has no bridge-visible
+        # state to tear down. Do NOT emit TabRemoved or a media-stop event —
+        # either would leak the existence/id/timing of a private tab. Still run
+        # the local media disconnect defensively (it is a no-op for OTR).
+        if getattr(wv, "is_off_the_record", False):
+            self._disconnect_media_signals(wv)
+            self._media_tabs.discard(tid)
+            self._audible_tabs.discard(tid)
             return
         self._disconnect_media_signals(wv)
         if tid in self._media_tabs:

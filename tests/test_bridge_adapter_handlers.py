@@ -390,10 +390,11 @@ def test_search_limit_is_clamped():
 
 
 class _FakeWebView:
-    def __init__(self, tid, title, url):
+    def __init__(self, tid, title, url, is_off_the_record=False):
         self.stable_id = tid
         self._title = title
         self._url = url
+        self.is_off_the_record = is_off_the_record
 
     def title(self):
         return self._title
@@ -486,9 +487,112 @@ def test_pages_proxy_missing_tab_raises():
         proxy.extract(999, "text")
 
 
+# --------------------------------------------------------------------- #
+# 02/S9 — private (off-the-record) tabs must not reach the bridge.
+# --------------------------------------------------------------------- #
+
+
+def test_tabs_proxy_list_hides_off_the_record():
+    pub = _FakeWebView(1, "Public", "https://pub/")
+    priv = _FakeWebView(2, "Secret", "https://secret/", is_off_the_record=True)
+    win = _FakeWindow([_FakeSplit([pub]), _FakeSplit([priv])])
+    proxy = ba.TabsProxy(win)
+    listed = proxy.list()
+    assert listed == [(1, "Public", "https://pub/")]
+    assert all(tid != 2 for (tid, _t, _u) in listed)
+    assert all("secret" not in url for (_i, _t, url) in listed)
+
+
+def test_pages_proxy_extract_denied_for_off_the_record():
+    priv = _FakeWebView(7, "Secret", "https://secret/", is_off_the_record=True)
+    win = _FakeWindow([_FakeSplit([priv])])
+    called: list = []
+    proxy = ba.PagesProxy(win, run_js=lambda wv, s: called.append(s) or "X")
+    with pytest.raises(PermissionError):
+        proxy.extract(7, "text")
+    assert called == [], "OTR extract must not even run the page JS"
+
+
+def test_tabs_proxy_close_denied_for_off_the_record():
+    """02/S9: TabsClose must refuse a private tab by id — hiding it from the
+    list is not an authorization boundary (ids are monotonic/guessable)."""
+    priv = _FakeWebView(2, "Secret", "https://secret/", is_off_the_record=True)
+    win = _FakeWindow([_FakeSplit([priv])])
+    proxy = ba.TabsProxy(win)
+    with pytest.raises(PermissionError):
+        proxy.close(2)
+    assert win.closed == [], "OTR tab must NOT be closed"
+
+
 def test_downloads_proxy_empty_when_no_plugin():
     proxy = ba.DownloadsProxy(None)
     assert proxy.list() == []
+
+
+def test_downloads_proxy_hides_private_downloads():
+    """02/S9: a private (off-the-record) download must not appear in the bridge
+    DownloadsList — its filename/state/timing is the same leak as its origin."""
+    class _Req:
+        def state(self):
+            return 1
+
+    class _W:
+        def __init__(self, path, private):
+            self._request = _Req()
+            self._private = private
+            self._p = path
+
+        def path(self):
+            return self._p
+
+    class _Panel:
+        _items = [(None, _W("/d/public.zip", False)),
+                  (None, _W("/d/secret.pdf", True))]
+        _history: list = []
+
+    class _Plug:
+        _panel = _Panel()
+
+    rows = ba.DownloadsProxy(_Plug()).list()
+    names = [name for (_i, name, _s) in rows]
+    assert names == ["public.zip"]
+    assert "secret.pdf" not in names
+
+
+def test_downloads_proxy_falls_back_to_request_when_marker_absent():
+    """02/S9 fallback: a widget without the _private marker is classified via
+    the plugin's _request_is_off_the_record (fail closed → private skipped)."""
+    class _Req:
+        def __init__(self, otr):
+            self.otr = otr
+
+        def state(self):
+            return 1
+
+    class _W:
+        def __init__(self, path, otr):
+            self._request = _Req(otr)
+            self._p = path
+            # NOTE: deliberately no _private marker.
+
+        def path(self):
+            return self._p
+
+    class _Panel:
+        _items = [(None, _W("/d/public.zip", False)),
+                  (None, _W("/d/secret.pdf", True))]
+        _history: list = []
+
+    class _Plug:
+        _panel = _Panel()
+
+        @staticmethod
+        def _request_is_off_the_record(req):
+            return bool(getattr(req, "otr", True))  # fail closed
+
+    rows = ba.DownloadsProxy(_Plug()).list()
+    names = [name for (_i, name, _s) in rows]
+    assert names == ["public.zip"]
 
 
 def test_media_proxy_update_and_status():

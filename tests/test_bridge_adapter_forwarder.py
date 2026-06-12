@@ -236,6 +236,42 @@ def test_plugin_updates_audible_title_and_stops_on_load():
     assert call.calls[-1]["body"]["playback_status"] == "stopped"
 
 
+def test_on_webview_added_skips_off_the_record_tab():
+    """02/S9: a private (off-the-record) tab must not produce a TabAdded
+    signal — that would leak its existence + URL to subscribed agents."""
+    plugin = ba.BridgeAdapterPlugin()
+    plugin.media_proxy = ba.MediaProxy()
+    emitted: list = []
+    plugin.emit_tab_added = lambda tid, url: emitted.append((tid, url))
+
+    pub = _FakeWebView(tab_id=20, title="Public")
+    plugin._on_webview_added(pub)
+    assert emitted == [(20, "")], "public tab should announce TabAdded"
+
+    priv = _FakeWebView(tab_id=21, title="Secret")
+    priv.is_off_the_record = True
+    plugin._on_webview_added(priv)
+    assert emitted == [(20, "")], "OTR tab must NOT announce TabAdded"
+
+
+def test_on_webview_removed_skips_off_the_record_tab():
+    """02/S9: a private (off-the-record) tab must not emit TabRemoved — that
+    would leak its existence/id/timing over the bridge."""
+    plugin = ba.BridgeAdapterPlugin()
+    plugin.media_proxy = ba.MediaProxy()
+    removed: list = []
+    plugin.emit_tab_removed = lambda tid: removed.append(tid)
+
+    pub = _FakeWebView(tab_id=30, title="Public")
+    plugin._on_webview_removed(pub)
+    assert removed == [30], "public tab should announce TabRemoved"
+
+    priv = _FakeWebView(tab_id=31, title="Secret")
+    priv.is_off_the_record = True
+    plugin._on_webview_removed(priv)
+    assert removed == [30], "OTR tab must NOT announce TabRemoved"
+
+
 def test_plugin_stops_paused_media_on_load_and_remove():
     call = _RecordingCall()
     plugin = ba.BridgeAdapterPlugin()

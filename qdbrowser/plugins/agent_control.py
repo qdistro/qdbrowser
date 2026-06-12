@@ -719,6 +719,38 @@ class _AgentServer(QObject):
                 return True
         return False
 
+    def _off_the_record_denied(self, method, params) -> tuple[bool, str]:
+        """02/S9: an external agent must not control a private
+        (off-the-record) tab — not drive it, read it, script it, attach to it,
+        or open one. Returns (denied, reason).
+
+        This BLOCKS the RPC, unlike :meth:`_targets_off_the_record` (which only
+        decides audit-log URL redaction). It resolves the target the same way:
+        an ``open_tab`` whose ``profile`` is private, or a ``tab_id`` that
+        resolves to an off-the-record webview. Every control verb carries an
+        explicit ``tab_id`` (rpc_navigate/click/type/eval/screenshot/...), so a
+        tab_id gate covers them all. Fail closed when a resolved tab's privacy
+        can't be read; but an unresolvable tab_id is left to the verb so the
+        agent gets the real ``no such tab`` error, not a misleading privacy
+        denial."""
+        if not isinstance(params, dict):
+            return (False, "")
+        if params.get("profile") == "private":
+            return (True, "agents may not open private (off-the-record) tabs")
+        if "tab_id" in params:
+            try:
+                wv = self._plugin._get_webview(params.get("tab_id"))
+            except Exception:
+                return (False, "")
+            try:
+                if bool(wv.is_off_the_record):
+                    return (True, "agents may not control private "
+                                  "(off-the-record) tabs")
+            except Exception:
+                return (True, "could not verify tab privacy; denying "
+                              "(fail closed)")
+        return (False, "")
+
     def handle(self, client: _Client, req: dict) -> dict:
         method = req.get("method")
         params = req.get("params") or {}
@@ -766,6 +798,17 @@ class _AgentServer(QObject):
                 "detail=%s",
                 os.getuid(), client.fd, method, deny_reason)
             return _err(rid, -32002, f"policy_denied: {deny_reason}")
+        # 02/S9: agents may not touch private (off-the-record) tabs at all —
+        # not control, read, script, attach, or open. Deny before rate-limit
+        # and broker mediation so a private-tab attempt consumes neither quota
+        # nor a broker round-trip.
+        otr_denied, otr_reason = self._off_the_record_denied(method, params)
+        if otr_denied:
+            log.warning(
+                "AGENT_RPC_DENY uid=%d fd=%d method=%s reason=off_the_record "
+                "detail=%s",
+                os.getuid(), client.fd, method, otr_reason)
+            return _err(rid, -32008, f"off_the_record_denied: {otr_reason}")
         # L4: rate limit. Check category bucket first (cheap to deny a
         # caller who's blown the screenshot quota without consuming a
         # slot in the total bucket) then the total. A denied request
@@ -1338,6 +1381,15 @@ class AgentControlPlugin(Plugin):
     def rpc_list_tabs(self, _client):
         out = []
         for wv in self._enumerate_webviews():
+            # 02/S9: never enumerate private (off-the-record) tabs to an agent.
+            # list_tabs carries no tab_id, so the handle() OTR deny gate can't
+            # catch it — filter here, the agent-control parallel to the bridge's
+            # TabsProxy.list. Fail closed: if privacy can't be read, hide it.
+            try:
+                if bool(wv.is_off_the_record):
+                    continue
+            except Exception:
+                continue
             tid = wv.stable_id
             out.append({
                 "id": tid,

@@ -253,6 +253,10 @@ class DownloadsPanel(QWidget):
     def add_active(self, request: QWebEngineDownloadRequest,
                    quarantined: bool = False, private: bool = False):
         widget = _DownloadItem(request, quarantined=quarantined)
+        # 02/S9: tag the widget as private so the bridge DownloadsProxy.list
+        # can keep it off the agent-visible surface (a private download's
+        # filename/state/timing is the same class of leak as its origin URL).
+        widget._private = bool(private)
         item = QListWidgetItem()
         item.setSizeHint(widget.sizeHint())
         item.setData(Qt.ItemDataRole.UserRole,

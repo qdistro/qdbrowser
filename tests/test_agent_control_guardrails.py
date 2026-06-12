@@ -1034,3 +1034,106 @@ def test_sighup_reloads_config(fresh_config, monkeypatch):
     enforced = cfg.get("agent_control", "policy_enforced", default=False)
     # The config file doesn't exist, so defaults apply.
     assert enforced is False
+
+
+# ===================================================================
+# 02/S9 — agents may not control private (off-the-record) tabs
+# ===================================================================
+
+def test_agent_control_denies_control_of_private_tab(fresh_config, caplog):
+    """A control RPC whose tab_id resolves to a private (off-the-record) tab
+    is denied (-32008) — before rate-limit / broker mediation."""
+    from qdbrowser.plugins.agent_control import (
+        AgentControlPlugin, _AgentServer)
+
+    class _OTRView:
+        is_off_the_record = True
+
+    plug = AgentControlPlugin()
+    plug._get_webview = lambda tab_id: _OTRView()
+    server = _AgentServer(plug, window=None)
+    req = {"jsonrpc": "2.0", "id": 1, "method": "navigate",
+           "params": {"tab_id": 5, "url": "https://secret/"}}
+    resp = server.handle(_StubClient(), req)
+    assert "error" in resp
+    assert resp["error"]["code"] == -32008
+    assert "off_the_record" in resp["error"]["message"]
+
+
+def test_agent_control_denies_opening_private_tab(fresh_config):
+    """open_tab with the private profile is denied (-32008): an agent may not
+    create a private tab either."""
+    from qdbrowser.plugins.agent_control import (
+        AgentControlPlugin, _AgentServer)
+    plug = AgentControlPlugin()
+    server = _AgentServer(plug, window=None)
+    req = {"jsonrpc": "2.0", "id": 1, "method": "open_tab",
+           "params": {"url": "https://x/", "profile": "private"}}
+    resp = server.handle(_StubClient(), req)
+    assert "error" in resp
+    assert resp["error"]["code"] == -32008
+
+
+def test_agent_control_off_the_record_gate_ignores_public_tab(fresh_config):
+    """The OTR gate is specific to private tabs: a public tab is not denied
+    with -32008 (it proceeds to the normal dispatch path)."""
+    from qdbrowser.plugins.agent_control import (
+        AgentControlPlugin, _AgentServer)
+
+    class _PubView:
+        is_off_the_record = False
+
+    plug = AgentControlPlugin()
+    plug._get_webview = lambda tab_id: _PubView()
+    server = _AgentServer(plug, window=None)
+    req = {"jsonrpc": "2.0", "id": 1, "method": "navigate",
+           "params": {"tab_id": 5, "url": "https://public/"}}
+    resp = server.handle(_StubClient(), req)
+    # May be denied/handled by a later gate or fail in dispatch, but never with
+    # the off-the-record code.
+    if "error" in resp:
+        assert resp["error"]["code"] != -32008
+
+
+def test_rpc_list_tabs_hides_off_the_record(fresh_config):
+    """02/S9: list_tabs carries no tab_id, so the handle() deny gate can't
+    catch it — rpc_list_tabs must filter private (off-the-record) tabs itself,
+    mirroring the bridge TabsProxy.list filter."""
+    from qdbrowser.plugins.agent_control import AgentControlPlugin
+
+    class _LV:
+        def __init__(self, tid, otr):
+            self.stable_id = tid
+            self.is_off_the_record = otr
+            self.muted = False
+            self.pinned = False
+            self.group = ""
+            self.profile_name = "private" if otr else "default"
+
+        def title(self):
+            return f"t{self.stable_id}"
+
+        def url(self):
+            return f"https://{self.stable_id}/"
+
+        def can_go_back(self):
+            return False
+
+        def can_go_forward(self):
+            return False
+
+        def is_loading(self):
+            return False
+
+        def zoom(self):
+            return 1.0
+
+        def page_load_seq(self):
+            return 0
+
+    plug = AgentControlPlugin()
+    plug._enumerate_webviews = lambda: [_LV(1, False), _LV(2, True)]
+    rows = plug.rpc_list_tabs(None)
+    assert [r["id"] for r in rows] == [1]
+    assert all(r["profile"] != "private" for r in rows)
+    assert all("2/" not in r["url"] for r in rows)
