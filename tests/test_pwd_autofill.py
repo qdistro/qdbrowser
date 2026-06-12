@@ -16,7 +16,6 @@ import hmac
 from dataclasses import dataclass
 
 import pytest
-
 from qdbrowser import pwd_autofill as pa
 
 # ---------------------------------------------------------------------------

@@ -1367,7 +1367,7 @@ class AgentControlPlugin(Plugin):
         timers, but it doesn't re-enter ``handle()`` on the agent
         socket — that fd's notifier is the outer loop's.
         """
-        from PyQt6.QtCore import QEventLoop, QTimer
+        from PyQt6.QtCore import QEventLoop
 
         result: dict = {"value": None, "done": False}
         loop = QEventLoop()
