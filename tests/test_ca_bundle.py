@@ -13,7 +13,7 @@ import pytest
 
 # A real (self-signed) PEM so the size check sees plausible bundle bytes.
 def _make_ca_pem():
-    cryptography = pytest.importorskip("cryptography")
+    pytest.importorskip("cryptography")
     from datetime import datetime, timedelta, timezone
 
     from cryptography import x509

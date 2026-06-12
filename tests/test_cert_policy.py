@@ -18,7 +18,7 @@ import pytest
 
 def _make_cert_der():
     """Build a self-signed DER cert and return (der_bytes, expected_pin)."""
-    cryptography = pytest.importorskip("cryptography")
+    pytest.importorskip("cryptography")
     from datetime import datetime, timedelta, timezone
 
     from cryptography import x509

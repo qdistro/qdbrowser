@@ -340,7 +340,6 @@ class WebView(QWidget):
     # -- signals --------------------------------------------------------
 
     def _wire_signals(self):
-        page = self.view.page()
         self.view.titleChanged.connect(self._on_title)
         self.view.iconChanged.connect(self._on_icon)
         self.view.urlChanged.connect(self._on_url)

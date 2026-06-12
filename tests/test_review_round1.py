@@ -131,7 +131,6 @@ def test_close_split_clears_active_before_emit(window):
 
 
 def test_close_tab_clears_active_before_emit(window):
-    wv = window._active_webview
     new_wv = window.new_tab(url="about:blank")
     seen = []
 
