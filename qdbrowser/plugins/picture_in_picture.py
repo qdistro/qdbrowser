@@ -19,7 +19,6 @@ from PyQt6.QtGui import QAction, QKeySequence
 from qdbrowser.plugin import CommandProvider
 from qdbrowser.plugins.agent_control import _RpcError
 
-
 log = logging.getLogger("qdbrowser.picture_in_picture")
 
 

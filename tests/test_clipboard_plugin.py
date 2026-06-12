@@ -6,27 +6,24 @@ plugin's DOM-metadata path is pure Python + cached dict lookups.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
-
-from PyQt6.QtCore import QMimeData, QByteArray
+from PyQt6.QtCore import QByteArray, QMimeData
 from PyQt6.QtGui import QGuiApplication
-
 from qdbrowser.plugins.clipboard import (
-    ClipboardOriginPlugin,
-    MIME_ORIGIN_URL,
-    MIME_ORIGIN_TAB_ID,
-    MIME_FETCHED_AT,
-    MIME_IS_PASSWORD_FIELD,
-    MIME_IS_CODE_BLOCK,
-    MIME_IS_CONTENT_EDITABLE,
-    MIME_CONTEXT_PASSWORD_FIELD,
+    _SELECTIONCHANGE_JS,
     MIME_CONTEXT_CODE_BLOCK,
     MIME_CONTEXT_CONTENT_EDITABLE,
-    _SELECTIONCHANGE_JS,
+    MIME_CONTEXT_PASSWORD_FIELD,
+    MIME_FETCHED_AT,
+    MIME_IS_CODE_BLOCK,
+    MIME_IS_CONTENT_EDITABLE,
+    MIME_IS_PASSWORD_FIELD,
+    MIME_ORIGIN_TAB_ID,
+    MIME_ORIGIN_URL,
+    ClipboardOriginPlugin,
 )
-
 
 # -- helpers ---------------------------------------------------------------
 

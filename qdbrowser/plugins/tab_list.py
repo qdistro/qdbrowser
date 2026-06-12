@@ -13,12 +13,15 @@ from typing import Optional
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem,
+    QHBoxLayout,
     QPushButton,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
-from qdbrowser.plugin import SidePanelProvider, CommandProvider
-
+from qdbrowser.plugin import CommandProvider, SidePanelProvider
 
 _ROLE_WV = Qt.ItemDataRole.UserRole + 1
 

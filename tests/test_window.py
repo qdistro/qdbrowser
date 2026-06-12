@@ -1,7 +1,6 @@
 """MainWindow smoke + tab/split lifecycle."""
 
 from PyQt6.QtCore import Qt
-
 from qdbrowser.config import Config
 from qdbrowser.webview import WebView
 from qdbrowser.window import MainWindow

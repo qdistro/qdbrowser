@@ -8,7 +8,6 @@ import time
 
 import pytest
 
-
 # ---- regex ReDoS guard (R1 #7) -----------------------------------
 
 def test_safe_compile_accepts_simple_regex():
@@ -48,6 +47,7 @@ def test_parser_drops_dangerous_regex_rules():
 
 def test_intercept_empty_doc_host_blocks_request_host(fresh_config):
     from unittest.mock import MagicMock
+
     from qdbrowser.plugins.content_blocker import ContentBlockerPlugin
     plug = ContentBlockerPlugin()
     plug.activate(object())
@@ -64,6 +64,7 @@ def test_intercept_empty_doc_host_ignores_per_site_off(fresh_config):
     """Even if the user has set ``request_host`` to off, an empty
     doc_host must NOT use the request host to look up the toggle."""
     from unittest.mock import MagicMock
+
     from qdbrowser.plugins.content_blocker import ContentBlockerPlugin
     plug = ContentBlockerPlugin()
     plug.activate(object())
@@ -120,8 +121,7 @@ def test_parse_key_shifted_letter_uppercase():
 # ---- screenshot dimension cap (R1 #20) ---------------------------
 
 def test_screenshot_dimension_constants_exist():
-    from qdbrowser.plugins.screenshot import (
-        _MAX_FULL_PAGE_WIDTH, _MAX_FULL_PAGE_HEIGHT)
+    from qdbrowser.plugins.screenshot import _MAX_FULL_PAGE_HEIGHT, _MAX_FULL_PAGE_WIDTH
     assert _MAX_FULL_PAGE_WIDTH <= 65536
     assert _MAX_FULL_PAGE_HEIGHT <= 65536
     assert _MAX_FULL_PAGE_WIDTH * _MAX_FULL_PAGE_HEIGHT * 4 < 10 * 1024**3
@@ -369,6 +369,7 @@ def test_url_bar_updates_on_tab_switch(window):
 
 def test_gesture_fires_window_method(fresh_config, themed_app):
     from unittest.mock import MagicMock
+
     from qdbrowser.config import Config
     from qdbrowser.plugins.mouse_gestures import MouseGesturesPlugin
 
@@ -383,6 +384,7 @@ def test_gesture_fires_window_method(fresh_config, themed_app):
 
 def test_gesture_callable_action_fires(fresh_config, themed_app):
     from unittest.mock import MagicMock
+
     from qdbrowser.config import Config
     from qdbrowser.plugins.mouse_gestures import MouseGesturesPlugin
 
@@ -399,7 +401,7 @@ def test_gesture_callable_action_fires(fresh_config, themed_app):
 
 def test_restore_reconnects_url_bar(window):
     from PyQt6.QtCore import QUrl
-    from qdbrowser.layout import serialize_layout, restore_layout
+    from qdbrowser.layout import restore_layout, serialize_layout
     data = serialize_layout(window._tabs)
     while window._tabs.count() > 0:
         window._tabs.removeTab(0)

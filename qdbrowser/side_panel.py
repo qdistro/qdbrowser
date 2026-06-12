@@ -6,8 +6,14 @@ selected panel fills the rest of the dock.
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QDockWidget, QWidget, QHBoxLayout, QVBoxLayout, QToolButton,
-    QStackedWidget, QButtonGroup, QSizePolicy,
+    QButtonGroup,
+    QDockWidget,
+    QHBoxLayout,
+    QSizePolicy,
+    QStackedWidget,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 

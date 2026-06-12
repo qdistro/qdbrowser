@@ -1,8 +1,12 @@
 """EasyList parser + cosmetic rules + per-site toggles."""
 
 from qdbrowser.plugins.content_blocker import (
-    parse_easylist, _NetworkRule, _CosmeticRule, ContentBlockerPlugin,
-    _is_host_suffix, _same_site,
+    ContentBlockerPlugin,
+    _CosmeticRule,
+    _is_host_suffix,
+    _NetworkRule,
+    _same_site,
+    parse_easylist,
 )
 
 

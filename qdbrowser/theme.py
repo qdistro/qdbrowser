@@ -2,9 +2,8 @@
 
 import os
 
-from PyQt6.QtGui import QPalette, QColor
+from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtWidgets import QApplication
-
 
 BG_DARK = "#1e1e1e"
 BG_MID = "#2d2d2d"

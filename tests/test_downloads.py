@@ -349,6 +349,7 @@ def test_persist_fails_closed_without_page(window, tmp_path, monkeypatch):
 
 def test_private_autorelease_host_redacted_in_log(window, tmp_path, caplog):
     import logging
+
     from qdbrowser.config import Config
     plug = window.plugins._instances["downloads"]
     plug._window = _Window(_Bridge())
@@ -371,6 +372,7 @@ def test_private_autorelease_host_redacted_in_log(window, tmp_path, caplog):
 
 def test_normal_autorelease_host_logged(window, tmp_path, caplog):
     import logging
+
     from qdbrowser.config import Config
     plug = window.plugins._instances["downloads"]
     plug._window = _Window(_Bridge())

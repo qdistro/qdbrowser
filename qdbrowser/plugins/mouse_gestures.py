@@ -11,12 +11,11 @@ from __future__ import annotations
 
 import logging
 
-from PyQt6.QtCore import QObject, QEvent, QPoint, Qt
+from PyQt6.QtCore import QEvent, QObject, QPoint, Qt
 from PyQt6.QtWidgets import QApplication
 
 from qdbrowser.config import Config
 from qdbrowser.plugin import Plugin
-
 
 log = logging.getLogger("qdbrowser.mouse_gestures")
 

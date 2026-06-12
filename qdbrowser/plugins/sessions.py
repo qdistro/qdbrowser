@@ -12,7 +12,6 @@ from qdbrowser.config import CONFIG_DIR
 from qdbrowser.layout import restore_layout, serialize_layout
 from qdbrowser.plugin import CommandProvider
 
-
 SESSIONS_DIR = os.path.join(CONFIG_DIR, "sessions")
 
 

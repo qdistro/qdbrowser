@@ -46,8 +46,8 @@ def test_activates_when_daemons_present(monkeypatch):
 
 def test_explicit_enabled_true_bypasses_daemon_probe(
         fresh_config, monkeypatch):
-    from qdbrowser.config import Config
     import qdbrowser.plugins.bridge_adapter as ba
+    from qdbrowser.config import Config
     Config().set("plugins", "bridge_adapter", "enabled", True)
     monkeypatch.setattr(ba, "_daemons_available", lambda: False)
     monkeypatch.setattr(
@@ -60,8 +60,8 @@ def test_explicit_enabled_true_bypasses_daemon_probe(
 
 def test_explicit_enabled_false_blocks_direct_activation(
         fresh_config, monkeypatch):
-    from qdbrowser.config import Config
     import qdbrowser.plugins.bridge_adapter as ba
+    from qdbrowser.config import Config
     Config().set("plugins", "bridge_adapter", "enabled", False)
     monkeypatch.setattr(ba, "_daemons_available", lambda: True)
     monkeypatch.setattr(

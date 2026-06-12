@@ -17,7 +17,6 @@ import subprocess
 import time
 from typing import Optional
 
-
 log = logging.getLogger("qdbrowser.downloads")
 
 
@@ -42,17 +41,22 @@ def _xdg_open(path: str) -> None:
         log.warning("xdg-open failed for %r: %s", path, exc)
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
-    QPushButton, QLabel, QProgressBar,
-)
 from PyQt6.QtWebEngineCore import QWebEngineDownloadRequest, QWebEngineProfile
+from PyQt6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QProgressBar,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
-from qdbrowser.config import Config, CONFIG_DIR
-from qdbrowser.plugin import SidePanelProvider, CommandProvider
 from qdbrowser import webview as wv_mod
+from qdbrowser.config import CONFIG_DIR, Config
+from qdbrowser.plugin import CommandProvider, SidePanelProvider
 from qdbrowser.quarantine import QuarantineStore, _sanitize_name
-
 
 HISTORY_PATH = os.path.join(CONFIG_DIR, "downloads.json")
 

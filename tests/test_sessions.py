@@ -16,8 +16,8 @@ def test_save_and_list(window, monkeypatch, tmp_path):
 
 
 def test_save_then_load_restores_url_count(window, monkeypatch, tmp_path):
-    from PyQt6.QtCore import Qt
     import qdbrowser.plugins.sessions as sessions_mod
+    from PyQt6.QtCore import Qt
     monkeypatch.setattr(sessions_mod, "SESSIONS_DIR",
                         str(tmp_path / "sessions"))
     monkeypatch.setattr(sessions_mod, "_path",

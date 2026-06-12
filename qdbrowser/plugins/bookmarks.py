@@ -7,13 +7,17 @@ import os
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget,
-    QListWidgetItem, QLineEdit,
+    QHBoxLayout,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 from qdbrowser.config import CONFIG_DIR
-from qdbrowser.plugin import SidePanelProvider, CommandProvider
-
+from qdbrowser.plugin import CommandProvider, SidePanelProvider
 
 BOOKMARKS_PATH = os.path.join(CONFIG_DIR, "bookmarks.json")
 

@@ -22,9 +22,7 @@ import threading
 import time
 
 import pytest
-
 from qdbrowser.plugins import bridge_adapter as ba
-
 
 # --------------------------------------------------------------------- #
 # Fakes
@@ -187,8 +185,7 @@ def test_plugin_emit_media_snapshots_metadata_on_caller_thread():
 
 
 def _handlers(polkit, history=None, bookmarks=None):
-    from tests.test_bridge_adapter_handlers import (
-        _FakeTabs, _FakePages, _FakeDownloads, _FakeMedia)
+    from tests.test_bridge_adapter_handlers import _FakeDownloads, _FakeMedia, _FakePages, _FakeTabs
     return ba.BridgeAdapterHandlers(
         _FakeTabs(), _FakePages(), _FakeDownloads(), _FakeMedia(),
         polkit=polkit, history=history, bookmarks=bookmarks)
@@ -240,7 +237,8 @@ def test_recv_loop_runs_polkit_before_main_thread_dispatch(monkeypatch):
     (via authorize) BEFORE call_on_main_thread is ever invoked. A deny
     means the main-thread dispatch is never scheduled."""
     from unittest.mock import MagicMock
-    from jeepney import MessageType, HeaderFields
+
+    from jeepney import HeaderFields, MessageType
 
     plugin = ba.BridgeAdapterPlugin()
     plugin._active = True
@@ -416,7 +414,8 @@ def test_recv_loop_fails_closed_when_start_time_unresolvable(monkeypatch):
     cannot be read must be DENIED (fail closed) — never authorized on a
     bare PID that could have been recycled."""
     from unittest.mock import MagicMock
-    from jeepney import MessageType, HeaderFields
+
+    from jeepney import HeaderFields, MessageType
 
     plugin = ba.BridgeAdapterPlugin()
     plugin._active = True
@@ -491,7 +490,8 @@ def test_recv_loop_allows_readonly_when_start_time_unresolvable(monkeypatch):
     """A read-only inventory method (TabsList) is NOT denied just because
     the caller start time is unresolvable — it never used pkcheck."""
     from unittest.mock import MagicMock
-    from jeepney import MessageType, HeaderFields
+
+    from jeepney import HeaderFields, MessageType
 
     plugin = ba.BridgeAdapterPlugin()
     plugin._active = True

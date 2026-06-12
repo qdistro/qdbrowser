@@ -7,7 +7,6 @@ import sys
 import tempfile
 import time
 
-
 _ENV_KEYS = (
     "HOME",
     "XDG_CONFIG_HOME",
@@ -59,13 +58,11 @@ os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = _merge_chromium_flags(
 
 # Make sure QtWebEngineWidgets is imported before QApplication.
 import PyQt6.QtWebEngineWidgets  # noqa: F401
-
 import pytest
-
 from PyQt6.QtCore import QCoreApplication
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication
 from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWidgets import QApplication
 
 
 def _drain_qt_events(app, rounds=10):

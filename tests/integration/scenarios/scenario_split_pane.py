@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from runner import emit, save_png
 
-
 HTML_A = "data:text/html,<title>page-A</title><body>A</body>"
 HTML_B = "data:text/html,<title>page-B</title><body>B</body>"
 HTML_C = "data:text/html,<title>page-C</title><body>C</body>"

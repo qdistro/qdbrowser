@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from runner import emit, save_png
 
-
 HTML = (
     "data:text/html;charset=utf-8,"
     "<title>click-and-type</title>"

@@ -22,8 +22,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from qdbrowser.config import Config
-from qdbrowser.plugin import PageObserver, CommandProvider
-
+from qdbrowser.plugin import CommandProvider, PageObserver
 
 # Base invert+hue-rotate filter. Skips images, videos, iframes.
 CSS_DEFAULT = """

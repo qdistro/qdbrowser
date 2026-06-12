@@ -55,7 +55,6 @@ import subprocess
 import time
 from typing import Optional
 
-
 log = logging.getLogger("qdbrowser.quarantine")
 
 

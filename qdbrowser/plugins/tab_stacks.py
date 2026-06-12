@@ -1,7 +1,8 @@
 """Tab stacks: group tabs under a named badge."""
 
-from qdbrowser.plugin import CommandProvider
 from PyQt6.QtWidgets import QInputDialog
+
+from qdbrowser.plugin import CommandProvider
 
 
 class TabStacksPlugin(CommandProvider):

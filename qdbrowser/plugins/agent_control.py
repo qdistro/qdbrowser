@@ -28,7 +28,6 @@ import struct
 import time
 from typing import Any, Optional
 
-
 log = logging.getLogger("qdbrowser.agent_control")
 
 # Hard caps to defend against same-UID DoS.
@@ -65,11 +64,24 @@ _REDACT_PARAM_KEYS = frozenset({
 _URL_PARAM_KEYS = frozenset({"url"})
 
 from PyQt6.QtCore import (
-    QBuffer, QByteArray, QEvent, QIODevice, QObject, QPoint, QPointF,
-    QSize, QSocketNotifier, Qt, QTimer, QUrl,
+    QBuffer,
+    QByteArray,
+    QEvent,
+    QIODevice,
+    QObject,
+    QPoint,
+    QPointF,
+    QSize,
+    QSocketNotifier,
+    Qt,
+    QTimer,
+    QUrl,
 )
 from PyQt6.QtGui import (
-    QKeyEvent, QMouseEvent, QWheelEvent, QKeySequence,
+    QKeyEvent,
+    QKeySequence,
+    QMouseEvent,
+    QWheelEvent,
 )
 from PyQt6.QtWidgets import QApplication
 

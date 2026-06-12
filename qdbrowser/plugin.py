@@ -19,14 +19,12 @@ import importlib.util
 import os
 import sys
 
-from qdbrowser.config import Config, CONFIG_DIR
-
 # Eagerly import the built-in plugins package so that
 # ``import qdbrowser.plugins.<name>`` works even after we register a
 # module via spec_from_file_location — otherwise the parent package
 # attribute is never set on ``qdbrowser`` and `import a.b.c as x` fails.
 import qdbrowser.plugins  # noqa: F401
-
+from qdbrowser.config import CONFIG_DIR, Config
 
 PLUGIN_DIRS = [
     os.path.join(os.path.dirname(__file__), "plugins"),

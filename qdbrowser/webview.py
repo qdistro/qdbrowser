@@ -19,17 +19,25 @@ import os
 from typing import Optional
 
 from PyQt6.QtCore import (
-    Qt, QUrl, pyqtSignal, QObject, QPointF, QEvent, QPoint, QTimer,
+    QEvent,
+    QObject,
+    QPoint,
+    QPointF,
     QSize,
+    Qt,
+    QTimer,
+    QUrl,
+    pyqtSignal,
 )
 from PyQt6.QtGui import QIcon, QPainter
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QSizePolicy, QApplication
 from PyQt6.QtWebEngineCore import (
-    QWebEngineProfile, QWebEnginePage, QWebEngineSettings,
+    QWebEnginePage,
+    QWebEngineProfile,
+    QWebEngineSettings,
     QWebEngineUrlRequestInterceptor,
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-
+from PyQt6.QtWidgets import QApplication, QSizePolicy, QVBoxLayout, QWidget
 
 _PROFILES: dict = {}
 

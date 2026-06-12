@@ -10,7 +10,6 @@ not a Readability.js replacement.
 
 from qdbrowser.plugin import CommandProvider
 
-
 READER_JS = r"""
 (function(){
   const OVERLAY_ID = '__qdb_reader_overlay';

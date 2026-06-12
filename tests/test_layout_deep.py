@@ -1,8 +1,7 @@
 """More layout serialization coverage."""
 
 from PyQt6.QtCore import Qt
-
-from qdbrowser.layout import _serialize_node, _restore_node
+from qdbrowser.layout import _restore_node, _serialize_node
 
 
 def test_serialize_unknown_widget_type():

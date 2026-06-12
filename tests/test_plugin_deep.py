@@ -126,6 +126,7 @@ def test_capabilities_index_filters_correctly(fresh_config):
 
 def test_plugin_manager_load_doubled_doesnt_reimport(fresh_config):
     import sys
+
     from qdbrowser.plugin import PluginManager
     pm = PluginManager()
     pm.discover()

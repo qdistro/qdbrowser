@@ -14,7 +14,6 @@ import traceback
 
 import pytest
 
-
 _RPC_TIMEOUT_S = float(os.environ.get("QDBROWSER_TEST_RPC_TIMEOUT", "15"))
 
 

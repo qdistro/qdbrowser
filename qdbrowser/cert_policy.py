@@ -41,7 +41,6 @@ import logging
 import os
 from typing import Iterable, Optional
 
-
 log = logging.getLogger("qdbrowser.cert")
 
 

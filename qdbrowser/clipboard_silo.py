@@ -36,7 +36,6 @@ from __future__ import annotations
 import os
 import re
 
-
 _VALID_SILO_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,31}$")
 
 

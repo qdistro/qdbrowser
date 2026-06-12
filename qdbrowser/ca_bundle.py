@@ -96,7 +96,6 @@ import os
 import stat
 from typing import Optional
 
-
 log = logging.getLogger("qdbrowser.cert")
 
 

@@ -1,7 +1,6 @@
 """Layout serialize / restore. Uses the window fixture for parented widgets."""
 
 from PyQt6.QtCore import Qt
-
 from qdbrowser.layout import _serialize_node, serialize_layout
 
 

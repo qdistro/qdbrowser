@@ -6,15 +6,18 @@ from __future__ import annotations
 
 import logging
 
-from PyQt6.QtCore import Qt, QEvent
+from PyQt6.QtCore import QEvent, Qt
 from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QLineEdit, QListWidget, QListWidgetItem,
+    QDialog,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QSizePolicy,
+    QVBoxLayout,
 )
 
 from qdbrowser.plugin import Plugin
-
 
 log = logging.getLogger("qdbrowser.command_palette")
 

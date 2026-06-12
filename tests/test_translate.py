@@ -1,7 +1,7 @@
 """Translate plugin: HTTP call shape + extraction flow (mocked)."""
 
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -71,6 +71,7 @@ def test_call_openai_chat_no_auth_when_key_blank(monkeypatch):
 
 def test_call_openai_chat_raises_on_http_error(monkeypatch):
     import urllib.error
+
     from qdbrowser.plugins import translate as t
 
     def fake_urlopen(*_a, **_k):

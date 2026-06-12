@@ -11,7 +11,6 @@ import os
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Fixture cert: generate a minimal self-signed DER at test-collection time.
 # ---------------------------------------------------------------------------
@@ -21,10 +20,11 @@ def _make_cert_der():
     """Build a self-signed DER cert and return (der_bytes, expected_pin)."""
     cryptography = pytest.importorskip("cryptography")
     from datetime import datetime, timedelta, timezone
+
     from cryptography import x509
-    from cryptography.x509.oid import NameOID
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([
@@ -128,7 +128,7 @@ def test_pinstore_pins_for_unknown_host():
 
 
 def test_evaluate_unpinned_host_is_ok(cert_fixture):
-    from qdbrowser.cert_policy import PinStore, PinDecision
+    from qdbrowser.cert_policy import PinDecision, PinStore
     der, _ = cert_fixture
     store = PinStore()
     d = store.evaluate("nothing.example.com", [der])
@@ -137,7 +137,7 @@ def test_evaluate_unpinned_host_is_ok(cert_fixture):
 
 
 def test_evaluate_matching_cert_allows(cert_fixture):
-    from qdbrowser.cert_policy import PinStore, PinDecision
+    from qdbrowser.cert_policy import PinDecision, PinStore
     der, expected = cert_fixture
     store = PinStore(pins={"test.example.com": [expected]})
     d = store.evaluate("test.example.com", [der])
@@ -148,7 +148,8 @@ def test_evaluate_matching_cert_allows(cert_fixture):
 
 def test_evaluate_mismatched_cert_rejects(cert_fixture, caplog):
     import logging
-    from qdbrowser.cert_policy import PinStore, PinDecision
+
+    from qdbrowser.cert_policy import PinDecision, PinStore
     der, _ = cert_fixture
     store = PinStore(pins={"test.example.com": ["sha256/AAAAdeadbeef"]})
     with caplog.at_level(logging.WARNING, logger="qdbrowser.cert"):
@@ -161,7 +162,8 @@ def test_evaluate_mismatched_cert_rejects(cert_fixture, caplog):
 
 def test_evaluate_pinned_but_overridden_accepts(cert_fixture, caplog):
     import logging
-    from qdbrowser.cert_policy import PinStore, PinDecision
+
+    from qdbrowser.cert_policy import PinDecision, PinStore
     der, _ = cert_fixture
     store = PinStore(
         pins={"test.example.com": ["sha256/wrong"]},
@@ -175,7 +177,7 @@ def test_evaluate_pinned_but_overridden_accepts(cert_fixture, caplog):
 
 
 def test_evaluate_no_certs_when_pinned():
-    from qdbrowser.cert_policy import PinStore, PinDecision
+    from qdbrowser.cert_policy import PinDecision, PinStore
     store = PinStore(pins={"a.com": ["sha256/abc"]})
     d = store.evaluate("a.com", [])
     assert d.kind == PinDecision.NO_CERTS
@@ -184,7 +186,7 @@ def test_evaluate_no_certs_when_pinned():
 
 def test_evaluate_intermediate_matches(cert_fixture):
     """If a non-leaf cert matches, the chain is accepted."""
-    from qdbrowser.cert_policy import PinStore, PinDecision
+    from qdbrowser.cert_policy import PinDecision, PinStore
     der, expected = cert_fixture
     # Leaf is garbage DER (returns None hash), intermediate is the real cert.
     store = PinStore(pins={"test.example.com": [expected]})
@@ -246,6 +248,7 @@ def test_load_pin_store_overrides_hosts_dict_form(tmp_path):
 
 def test_load_pin_store_malformed_json_treated_as_empty(tmp_path, caplog):
     import logging
+
     from qdbrowser.cert_policy import load_pin_store
     bad = tmp_path / "bad.json"
     bad.write_text("{not json")

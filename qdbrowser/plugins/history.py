@@ -8,13 +8,17 @@ import time
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget,
-    QListWidgetItem, QLineEdit,
+    QHBoxLayout,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 from qdbrowser.config import CONFIG_DIR
-from qdbrowser.plugin import SidePanelProvider, PageObserver, CommandProvider
-
+from qdbrowser.plugin import CommandProvider, PageObserver, SidePanelProvider
 
 HISTORY_PATH = os.path.join(CONFIG_DIR, "history.jsonl")
 MAX_HISTORY = 10000

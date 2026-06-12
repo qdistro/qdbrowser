@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-
 from qdbrowser import clipboard_silo as cs
 
 

@@ -1,7 +1,6 @@
 """agent_control: unit-test helpers that don't need the live socket."""
 
 import pytest
-
 from PyQt6.QtCore import Qt
 
 

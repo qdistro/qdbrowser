@@ -11,7 +11,6 @@ from qdbrowser.config import CONFIG_DIR
 from qdbrowser.layout import restore_layout, serialize_layout
 from qdbrowser.plugin import CommandProvider
 
-
 WORKSPACES_PATH = os.path.join(CONFIG_DIR, "workspaces.json")
 
 

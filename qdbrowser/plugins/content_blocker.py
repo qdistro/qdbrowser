@@ -29,9 +29,8 @@ import logging
 import os
 import re
 import threading
-from typing import Set, Optional
+from typing import Optional, Set
 from urllib.parse import urlparse
-
 
 log = logging.getLogger("qdbrowser.content_blocker")
 
@@ -39,9 +38,8 @@ from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtWebEngineCore import QWebEngineUrlRequestInfo
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 
-from qdbrowser.config import Config, CONFIG_DIR
-from qdbrowser.plugin import UrlInterceptor, CommandProvider, PageObserver
-
+from qdbrowser.config import CONFIG_DIR, Config
+from qdbrowser.plugin import CommandProvider, PageObserver, UrlInterceptor
 
 HOSTS_PATH = os.path.join(CONFIG_DIR, "blocklist.hosts")
 EASYLIST_PATH = os.path.join(CONFIG_DIR, "blocklist.txt")

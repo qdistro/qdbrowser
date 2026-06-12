@@ -266,8 +266,7 @@ def test_panel_registered_in_window(window):
 
 
 def test_widget_renders_and_refreshes(qtbot, tmp_path):
-    from qdbrowser.plugins.quarantine_panel import (
-        QuarantineController, QuarantinePanel)
+    from qdbrowser.plugins.quarantine_panel import QuarantineController, QuarantinePanel
     store = _make_store(tmp_path)
     ctl = QuarantineController(store)
     panel = QuarantinePanel(None, ctl)

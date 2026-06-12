@@ -11,16 +11,16 @@ These tests cover:
 
 from unittest.mock import MagicMock
 
-from qdbrowser import webview as wv_mod
-from qdbrowser.webview import (
-    resolve_user_agent,
-    apply_user_agent,
-    pin_all_profiles,
-    get_profile,
-    _UA_PRESETS,
-)
 from qdbrowser.security_interceptor import _SAFE_UA_TOKENS
+from qdbrowser.webview import (
+    _UA_PRESETS,
+    apply_user_agent,
+    get_profile,
+    pin_all_profiles,
+    resolve_user_agent,
+)
 
+from qdbrowser import webview as wv_mod
 
 # -- resolve_user_agent ----------------------------------------------------
 

@@ -50,7 +50,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-
 log = logging.getLogger("qdbrowser.pwd_autofill")
 
 

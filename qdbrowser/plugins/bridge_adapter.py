@@ -33,10 +33,8 @@ import subprocess
 import threading
 from typing import Any, Callable, Optional
 
-
 from qdbrowser.config import Config
 from qdbrowser.plugin import Plugin
-
 
 log = logging.getLogger("qdbrowser.bridge_adapter")
 
@@ -1525,8 +1523,10 @@ class BridgeAdapterPlugin(Plugin):
         """Blocking receive loop — runs in a background thread."""
         try:
             from jeepney import (
-                MessageType, HeaderFields,
-                new_method_return, new_error,
+                HeaderFields,
+                MessageType,
+                new_error,
+                new_method_return,
             )
         except ImportError:
             log.warning("jeepney not available; receive loop not started")

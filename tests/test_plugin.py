@@ -1,10 +1,13 @@
 """Plugin discovery + loading."""
 
 from qdbrowser.plugin import (
-    PluginManager, Plugin, SidePanelProvider, UrlInterceptor,
-    CommandProvider, PageObserver,
+    CommandProvider,
+    PageObserver,
+    Plugin,
+    PluginManager,
+    SidePanelProvider,
+    UrlInterceptor,
 )
-
 
 EXPECTED_PLUGINS = {
     "agent_control", "bookmarks", "command_palette", "content_blocker",

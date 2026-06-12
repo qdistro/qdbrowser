@@ -9,9 +9,7 @@ session bus.
 from __future__ import annotations
 
 import pytest
-
 from qdbrowser.plugins import bridge_adapter as ba
-
 
 # --------------------------------------------------------------------- #
 # Tiny fakes for the four proxies.
@@ -873,7 +871,7 @@ def test_recv_loop_dispatches_method_call(monkeypatch):
 
     # Monkeypatch jeepney imports used by _recv_loop.
     # We need the real MessageType/HeaderFields enums to match.
-    from jeepney import MessageType, HeaderFields
+    from jeepney import HeaderFields, MessageType
     fake_msg.header.message_type = MessageType.method_call
     fake_msg.header.fields = {
         HeaderFields.interface: ba.QDBROWSER_IFACE,
@@ -904,7 +902,8 @@ def test_recv_loop_returns_error_for_unknown_method(monkeypatch):
     plugin._stop = __import__("threading").Event()
 
     from unittest.mock import MagicMock
-    from jeepney import MessageType, HeaderFields
+
+    from jeepney import HeaderFields, MessageType
 
     fake_msg = MagicMock()
     fake_msg.header.message_type = MessageType.method_call
@@ -961,7 +960,8 @@ def test_recv_loop_handles_introspect(monkeypatch):
     plugin._stop = __import__("threading").Event()
 
     from unittest.mock import MagicMock
-    from jeepney import MessageType, HeaderFields
+
+    from jeepney import HeaderFields, MessageType
 
     fake_msg = MagicMock()
     fake_msg.header.message_type = MessageType.method_call
@@ -1026,7 +1026,8 @@ def test_recv_loop_denies_when_pid_resolution_fails(monkeypatch):
     plugin._stop = __import__("threading").Event()
 
     from unittest.mock import MagicMock
-    from jeepney import MessageType, HeaderFields
+
+    from jeepney import HeaderFields, MessageType
 
     fake_msg = MagicMock()
     fake_msg.header.message_type = MessageType.method_call

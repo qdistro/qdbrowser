@@ -10,7 +10,6 @@ import socket
 
 import pytest
 
-
 # ---- stable WebView ids (Reviewer 1 #4) ---------------------------
 
 def test_webviews_have_stable_unique_ids(window):
@@ -151,9 +150,9 @@ def test_close_tab_clears_active_before_emit(window):
 def test_restore_emits_webview_added_per_view(window):
     """restore_layout should emit webview_added for each WebView so
     plugins (tab_list, downloads wiring, agent indexes) re-see them."""
-    from qdbrowser.layout import serialize_layout, restore_layout
     # Add a second view via split.
     from PyQt6.QtCore import Qt
+    from qdbrowser.layout import restore_layout, serialize_layout
     window._split(Qt.Orientation.Horizontal)
     data = serialize_layout(window._tabs)
     while window._tabs.count() > 0:
@@ -169,7 +168,7 @@ def test_restore_only_connects_once(window):
     """The restored WebView's url_changed signal must update the URL
     bar exactly once — not twice from double-_connect_webview."""
     from PyQt6.QtCore import QUrl
-    from qdbrowser.layout import serialize_layout, restore_layout
+    from qdbrowser.layout import restore_layout, serialize_layout
     data = serialize_layout(window._tabs)
     while window._tabs.count() > 0:
         window._tabs.removeTab(0)
@@ -221,7 +220,7 @@ def test_safe_unlink_removes_real_socket(tmp_path):
 # ---- TOML array-of-tables (Reviewer 1 #16) ------------------------
 
 def test_toml_bookmark_dict_in_list_roundtrips(fresh_config):
-    from qdbrowser.config import Config, CONFIG_FILE
+    from qdbrowser.config import CONFIG_FILE, Config
     cfg = Config()
     cfg.set("bookmarks", [
         {"title": "DDG", "url": "https://duckduckgo.com"},
@@ -286,7 +285,7 @@ def test_easylist_bang_comment_dropped():
 
 def test_max_line_bytes_constant_set():
     """A non-trivial cap must be in place — not unlimited."""
-    from qdbrowser.plugins.agent_control import _MAX_LINE_BYTES, _MAX_BUFFER_BYTES
+    from qdbrowser.plugins.agent_control import _MAX_BUFFER_BYTES, _MAX_LINE_BYTES
     assert _MAX_LINE_BYTES <= 16 * 1024 * 1024
     assert _MAX_BUFFER_BYTES <= 32 * 1024 * 1024
     assert _MAX_LINE_BYTES >= 1024

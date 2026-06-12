@@ -25,8 +25,8 @@ def test_dark_stylesheet_constants_present():
 
 
 def test_palette_distinguishes_dark_light(themed_app):
-    from qdbrowser.theme import apply_theme
     from PyQt6.QtGui import QPalette
+    from qdbrowser.theme import apply_theme
     apply_theme(themed_app, "dark")
     dark_window = themed_app.palette().color(QPalette.ColorRole.Window).name()
     apply_theme(themed_app, "light")

@@ -8,13 +8,18 @@ import time
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
-    QTextEdit, QPushButton, QLineEdit,
+    QHBoxLayout,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QPushButton,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
 from qdbrowser.config import CONFIG_DIR
-from qdbrowser.plugin import SidePanelProvider, CommandProvider
-
+from qdbrowser.plugin import CommandProvider, SidePanelProvider
 
 NOTES_PATH = os.path.join(CONFIG_DIR, "notes.json")
 

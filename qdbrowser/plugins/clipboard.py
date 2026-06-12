@@ -41,7 +41,7 @@ import logging
 import time
 from typing import Optional
 
-from PyQt6.QtCore import QMimeData, QByteArray
+from PyQt6.QtCore import QByteArray, QMimeData
 from PyQt6.QtGui import QClipboard, QGuiApplication
 from PyQt6.QtWidgets import QApplication
 

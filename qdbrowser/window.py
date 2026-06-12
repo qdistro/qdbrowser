@@ -18,22 +18,30 @@ import logging
 import os
 from typing import Optional
 
-
 log = logging.getLogger("qdbrowser.window")
 
-from PyQt6.QtCore import Qt, QUrl, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QKeySequence, QIcon
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QAction, QIcon, QKeySequence
 from PyQt6.QtWidgets import (
-    QMainWindow, QTabWidget, QWidget, QToolBar, QLineEdit, QToolButton,
-    QStatusBar, QProgressBar, QSizePolicy, QHBoxLayout, QLabel, QApplication,
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QProgressBar,
+    QSizePolicy,
+    QStatusBar,
+    QTabWidget,
+    QToolBar,
+    QToolButton,
+    QWidget,
 )
 
-from qdbrowser.config import Config, CONFIG_DIR
+from qdbrowser.config import CONFIG_DIR, Config
 from qdbrowser.plugin import PluginManager
 from qdbrowser.side_panel import SidePanel
 from qdbrowser.splitter import SplitContainer
 from qdbrowser.webview import WebView
-
 
 # Autosave path. Lives under the same ``sessions/`` directory as named
 # saves so a tester can find every session-shaped file in one place.
@@ -226,7 +234,9 @@ class MainWindow(QMainWindow):
     def _should_enable_bridge_adapter(self) -> bool:
         try:
             from qdbrowser.plugins.bridge_adapter import (
-                _daemons_available, _enabled_config_override)
+                _daemons_available,
+                _enabled_config_override,
+            )
             explicit = _enabled_config_override()
             if explicit is not None:
                 return explicit
@@ -297,8 +307,8 @@ class MainWindow(QMainWindow):
         # 2. Certificate pinning — install on every profile that exists
         #    now and subscribe to future profile creations.
         try:
-            from qdbrowser.cert_policy import load_pin_store, install_cert_policy
             from qdbrowser import webview as wv_mod
+            from qdbrowser.cert_policy import install_cert_policy, load_pin_store
             sec = self._config.get("security", default={}) or {}
             pin_store = load_pin_store(
                 system_path=sec.get("cert_pins_path"),

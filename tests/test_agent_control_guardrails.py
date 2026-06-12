@@ -17,7 +17,6 @@ from unittest import mock
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Stub client used by tests that exercise server.handle() directly
 # without a live socket connection.
@@ -92,8 +91,7 @@ def test_redact_strips_url_for_private():
 
 def test_audit_log_redacts_private_open_tab_url(fresh_config, caplog):
     """open_tab with profile=private must not log the private URL."""
-    from qdbrowser.plugins.agent_control import (
-        AgentControlPlugin, _AgentServer)
+    from qdbrowser.plugins.agent_control import AgentControlPlugin, _AgentServer
 
     plug = AgentControlPlugin()
     server = _AgentServer(plug, window=None)
@@ -116,8 +114,7 @@ def test_audit_log_redacts_private_open_tab_url(fresh_config, caplog):
 
 def test_audit_log_keeps_normal_open_tab_url(fresh_config, caplog):
     """A default-profile open_tab still records the URL for audit value."""
-    from qdbrowser.plugins.agent_control import (
-        AgentControlPlugin, _AgentServer)
+    from qdbrowser.plugins.agent_control import AgentControlPlugin, _AgentServer
 
     plug = AgentControlPlugin()
     server = _AgentServer(plug, window=None)
@@ -137,8 +134,7 @@ def test_audit_log_keeps_normal_open_tab_url(fresh_config, caplog):
 def test_audit_redacts_url_for_unresolvable_tab(fresh_config, caplog):
     """navigate to an unknown tab_id with a url fails closed: the URL is
     redacted rather than risk logging a private destination."""
-    from qdbrowser.plugins.agent_control import (
-        AgentControlPlugin, _AgentServer)
+    from qdbrowser.plugins.agent_control import AgentControlPlugin, _AgentServer
 
     plug = AgentControlPlugin()
     server = _AgentServer(plug, window=None)
@@ -168,8 +164,7 @@ def test_audit_log_redacts_script(fresh_config, caplog):
     needing a live webview.
     """
     from qdbrowser.config import Config
-    from qdbrowser.plugins.agent_control import (
-        AgentControlPlugin, _AgentServer)
+    from qdbrowser.plugins.agent_control import AgentControlPlugin, _AgentServer
 
     Config().set("agent_control", "policy_enforced", True)
 
@@ -197,8 +192,7 @@ def test_audit_log_redacts_script(fresh_config, caplog):
 
 def test_audit_log_emitted_when_policy_off(fresh_config, caplog):
     """Even with policy off, audit logging fires on every RPC."""
-    from qdbrowser.plugins.agent_control import (
-        AgentControlPlugin, _AgentServer)
+    from qdbrowser.plugins.agent_control import AgentControlPlugin, _AgentServer
 
     plug = AgentControlPlugin()
     server = _AgentServer(plug, window=None)
@@ -218,8 +212,7 @@ def test_audit_log_emitted_when_policy_off(fresh_config, caplog):
 def test_audit_log_includes_pid_and_exe(fresh_config, caplog):
     """Audit line includes the client PID and exe from handshake or
     accept-time identity."""
-    from qdbrowser.plugins.agent_control import (
-        AgentControlPlugin, _AgentServer)
+    from qdbrowser.plugins.agent_control import AgentControlPlugin, _AgentServer
 
     plug = AgentControlPlugin()
     server = _AgentServer(plug, window=None)
@@ -327,8 +320,7 @@ def test_policy_denied_returns_structured_error(fresh_config):
     """When policy denies a method, the response includes error code
     -32002 and mentions the method name."""
     from qdbrowser.config import Config
-    from qdbrowser.plugins.agent_control import (
-        AgentControlPlugin, _AgentServer)
+    from qdbrowser.plugins.agent_control import AgentControlPlugin, _AgentServer
     Config().set("agent_control", "policy_enforced", True)
     plug = AgentControlPlugin()
     server = _AgentServer(plug, window=None)
@@ -540,8 +532,7 @@ def test_rate_limited_response_has_retry_after(fresh_config):
     """When the server returns rate_limited, the error object contains
     a ``retry_after`` field with the number of seconds to wait."""
     from qdbrowser.config import Config
-    from qdbrowser.plugins.agent_control import (
-        AgentControlPlugin, _AgentServer)
+    from qdbrowser.plugins.agent_control import AgentControlPlugin, _AgentServer
     Config().set("agent_control", "screenshot_rate_limit_per_minute", 1)
     plug = AgentControlPlugin()
     server = _AgentServer(plug, window=None)
@@ -692,8 +683,7 @@ def test_broker_skips_non_mediated_methods(fresh_config):
 
 def test_broker_mediated_methods_include_defaults(fresh_config):
     """The broker-mediated set always includes _DEFAULT_DENIED_METHODS."""
-    from qdbrowser.plugins.agent_control import (
-        AgentControlPlugin, _DEFAULT_DENIED_METHODS)
+    from qdbrowser.plugins.agent_control import _DEFAULT_DENIED_METHODS, AgentControlPlugin
     plug = AgentControlPlugin()
     mediated = plug._broker_mediated_methods()
     for m in _DEFAULT_DENIED_METHODS:
@@ -765,8 +755,9 @@ def test_proc_exe_digest_returns_none_for_bogus_pid():
 
 def test_proc_exe_digest_returns_path_for_self():
     """Reading /proc/self/exe should return a valid path."""
-    from qdbrowser.plugins.agent_control import _proc_exe_digest
     import sys
+
+    from qdbrowser.plugins.agent_control import _proc_exe_digest
     pid = os.getpid()
     exe, digest = _proc_exe_digest(pid)
     # On Linux, this should resolve to the python interpreter.
@@ -826,8 +817,7 @@ def test_resolve_allowed_exes_skips_bad_entries():
 
 def test_handshake_protocol_basic(fresh_config):
     """A handshake frame is processed and returns verified status."""
-    from qdbrowser.plugins.agent_control import (
-        AgentControlPlugin, _AgentServer)
+    from qdbrowser.plugins.agent_control import AgentControlPlugin, _AgentServer
 
     plug = AgentControlPlugin()
     server = _AgentServer(plug, window=None)
@@ -854,8 +844,7 @@ def test_handshake_protocol_basic(fresh_config):
 
 
 def test_handshake_rejects_invalid_pid(fresh_config):
-    from qdbrowser.plugins.agent_control import (
-        AgentControlPlugin, _AgentServer)
+    from qdbrowser.plugins.agent_control import AgentControlPlugin, _AgentServer
 
     plug = AgentControlPlugin()
     server = _AgentServer(plug, window=None)
@@ -868,8 +857,7 @@ def test_handshake_rejects_invalid_pid(fresh_config):
 
 def test_handshake_mismatched_exe(fresh_config):
     """If claimed exe doesn't match /proc/<pid>/exe, verified=False."""
-    from qdbrowser.plugins.agent_control import (
-        AgentControlPlugin, _AgentServer)
+    from qdbrowser.plugins.agent_control import AgentControlPlugin, _AgentServer
 
     plug = AgentControlPlugin()
     server = _AgentServer(plug, window=None)
@@ -889,8 +877,7 @@ def test_handshake_mismatched_exe(fresh_config):
 
 def test_handshake_logged(fresh_config, caplog):
     """Handshake produces an AGENT_RPC_HANDSHAKE log line."""
-    from qdbrowser.plugins.agent_control import (
-        AgentControlPlugin, _AgentServer)
+    from qdbrowser.plugins.agent_control import AgentControlPlugin, _AgentServer
 
     plug = AgentControlPlugin()
     server = _AgentServer(plug, window=None)
@@ -912,8 +899,7 @@ def test_handshake_logged(fresh_config, caplog):
 def test_require_handshake_blocks_rpc(fresh_config):
     """When require_handshake=true, RPCs before handshake are rejected."""
     from qdbrowser.config import Config
-    from qdbrowser.plugins.agent_control import (
-        AgentControlPlugin, _AgentServer)
+    from qdbrowser.plugins.agent_control import AgentControlPlugin, _AgentServer
 
     Config().set("agent_control", "require_handshake", True)
     plug = AgentControlPlugin()
@@ -933,8 +919,7 @@ def test_require_handshake_blocks_rpc(fresh_config):
 def test_require_handshake_allows_after_handshake(fresh_config):
     """After completing handshake, RPCs proceed normally."""
     from qdbrowser.config import Config
-    from qdbrowser.plugins.agent_control import (
-        AgentControlPlugin, _AgentServer)
+    from qdbrowser.plugins.agent_control import AgentControlPlugin, _AgentServer
 
     Config().set("agent_control", "require_handshake", True)
     plug = AgentControlPlugin()
@@ -960,8 +945,7 @@ def test_require_handshake_allows_after_handshake(fresh_config):
 
 def test_handshake_not_required_by_default(fresh_config):
     """Without require_handshake config, RPCs work without handshake."""
-    from qdbrowser.plugins.agent_control import (
-        AgentControlPlugin, _AgentServer)
+    from qdbrowser.plugins.agent_control import AgentControlPlugin, _AgentServer
 
     plug = AgentControlPlugin()
     server = _AgentServer(plug, window=None)
@@ -985,6 +969,7 @@ def test_sighup_reloads_config(fresh_config, monkeypatch):
     """SIGHUP triggers config singleton reset so new policy takes
     effect without restart."""
     import signal as sig
+
     from qdbrowser.config import Config
     from qdbrowser.plugins.agent_control import AgentControlPlugin
 
@@ -1043,8 +1028,7 @@ def test_sighup_reloads_config(fresh_config, monkeypatch):
 def test_agent_control_denies_control_of_private_tab(fresh_config, caplog):
     """A control RPC whose tab_id resolves to a private (off-the-record) tab
     is denied (-32008) — before rate-limit / broker mediation."""
-    from qdbrowser.plugins.agent_control import (
-        AgentControlPlugin, _AgentServer)
+    from qdbrowser.plugins.agent_control import AgentControlPlugin, _AgentServer
 
     class _OTRView:
         is_off_the_record = True
@@ -1063,8 +1047,7 @@ def test_agent_control_denies_control_of_private_tab(fresh_config, caplog):
 def test_agent_control_denies_opening_private_tab(fresh_config):
     """open_tab with the private profile is denied (-32008): an agent may not
     create a private tab either."""
-    from qdbrowser.plugins.agent_control import (
-        AgentControlPlugin, _AgentServer)
+    from qdbrowser.plugins.agent_control import AgentControlPlugin, _AgentServer
     plug = AgentControlPlugin()
     server = _AgentServer(plug, window=None)
     req = {"jsonrpc": "2.0", "id": 1, "method": "open_tab",
@@ -1077,8 +1060,7 @@ def test_agent_control_denies_opening_private_tab(fresh_config):
 def test_agent_control_off_the_record_gate_ignores_public_tab(fresh_config):
     """The OTR gate is specific to private tabs: a public tab is not denied
     with -32008 (it proceeds to the normal dispatch path)."""
-    from qdbrowser.plugins.agent_control import (
-        AgentControlPlugin, _AgentServer)
+    from qdbrowser.plugins.agent_control import AgentControlPlugin, _AgentServer
 
     class _PubView:
         is_off_the_record = False

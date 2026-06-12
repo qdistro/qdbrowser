@@ -30,13 +30,12 @@ import urllib.request
 from typing import Callable, Optional
 from urllib.parse import urlparse
 
-from PyQt6.QtCore import Qt, QObject, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence
 
 from qdbrowser.config import Config
 from qdbrowser.plugin import CommandProvider
 from qdbrowser.plugins.agent_control import _RpcError
-
 
 log = logging.getLogger("qdbrowser.translate")
 

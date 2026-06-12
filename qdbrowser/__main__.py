@@ -27,7 +27,6 @@ import sys
 
 from PyQt6.QtCore import Qt
 
-
 log = logging.getLogger("qdbrowser")
 
 # QtWebEngineWidgets must be imported before QApplication is constructed —
@@ -88,8 +87,8 @@ def _apply_ca_bundle(profile):
     hot-swappable between profiles in a running instance).
     """
     try:
-        from qdbrowser.config import Config
         from qdbrowser.ca_bundle import apply_ca_bundle_env
+        from qdbrowser.config import Config
     except Exception:
         return
     try:

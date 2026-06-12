@@ -26,15 +26,21 @@ from typing import Optional
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
-    QPushButton, QLabel, QFileDialog, QMessageBox,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
 )
 
-from qdbrowser.config import Config
-from qdbrowser.plugin import SidePanelProvider, CommandProvider
 from qdbrowser import quarantine as quar_mod
+from qdbrowser.config import Config
+from qdbrowser.plugin import CommandProvider, SidePanelProvider
 from qdbrowser.quarantine import QuarantineStore
-
 
 log = logging.getLogger("qdbrowser.quarantine_panel")
 

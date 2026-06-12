@@ -34,7 +34,6 @@ import logging
 import re
 from typing import Iterable, Optional
 
-
 log = logging.getLogger("qdbrowser.security")
 
 
