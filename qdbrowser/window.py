@@ -16,15 +16,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Optional
 
 log = logging.getLogger("qdbrowser.window")
 
-from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QAction, QIcon, QKeySequence
-from PyQt6.QtWidgets import (
-    QApplication,
-    QHBoxLayout,
+from PyQt6.QtCore import Qt, pyqtSignal  # noqa: E402
+from PyQt6.QtGui import QAction, QIcon, QKeySequence  # noqa: E402
+from PyQt6.QtWidgets import (  # noqa: E402
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -33,15 +30,13 @@ from PyQt6.QtWidgets import (
     QStatusBar,
     QTabWidget,
     QToolBar,
-    QToolButton,
-    QWidget,
 )
 
-from qdbrowser.config import CONFIG_DIR, Config
-from qdbrowser.plugin import PluginManager
-from qdbrowser.side_panel import SidePanel
-from qdbrowser.splitter import SplitContainer
-from qdbrowser.webview import WebView
+from qdbrowser.config import CONFIG_DIR, Config  # noqa: E402
+from qdbrowser.plugin import PluginManager  # noqa: E402
+from qdbrowser.side_panel import SidePanel  # noqa: E402
+from qdbrowser.splitter import SplitContainer  # noqa: E402
+from qdbrowser.webview import WebView  # noqa: E402
 
 # Autosave path. Lives under the same ``sessions/`` directory as named
 # saves so a tester can find every session-shaped file in one place.
@@ -82,7 +77,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("qdbrowser")
         self._resolved_theme = resolved_theme
         self._config = Config()
-        self._active_webview: Optional[WebView] = None
+        self._active_webview: WebView | None = None
         self._closed_tabs: list = []  # stack of {tree, name}
         self._last_find_text: str = ""
 

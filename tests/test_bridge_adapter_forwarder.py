@@ -109,9 +109,9 @@ def test_notify_download_maps_completed_state():
 def test_notify_download_state_translation():
     call = _RecordingCall()
     fwd = ba.DaemonForwarder(call=call)
-    for state_int, wire in ((0, "in_progress"), (1, "in_progress"),
-                            (2, "complete"), (3, "interrupted"),
-                            (4, "interrupted")):
+    for state_int, _wire in ((0, "in_progress"), (1, "in_progress"),
+                             (2, "complete"), (3, "interrupted"),
+                             (4, "interrupted")):
         fwd.notify_download(1, "f", state_int)
     states = [c["body"]["state"] for c in call.calls]
     assert states == ["in_progress", "in_progress", "complete",

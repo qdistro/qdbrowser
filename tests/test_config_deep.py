@@ -119,7 +119,7 @@ def test_toml_list_of_strings(fresh_config):
 
 
 def test_toml_writer_helpers():
-    from qdbrowser.config import _toml_string, _toml_value
+    from qdbrowser.config import _toml_value
     assert _toml_value(True) == "true"
     assert _toml_value(False) == "false"
     assert _toml_value(42) == "42"

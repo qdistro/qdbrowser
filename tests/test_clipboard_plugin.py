@@ -6,9 +6,8 @@ plugin's DOM-metadata path is pure Python + cached dict lookups.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock, patch
 
-import pytest
 from PyQt6.QtCore import QByteArray, QMimeData
 from PyQt6.QtGui import QGuiApplication
 from qdbrowser.plugins.clipboard import (

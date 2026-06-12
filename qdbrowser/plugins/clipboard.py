@@ -39,11 +39,9 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
 
 from PyQt6.QtCore import QByteArray, QMimeData
 from PyQt6.QtGui import QClipboard, QGuiApplication
-from PyQt6.QtWidgets import QApplication
 
 from qdbrowser.plugin import PageObserver
 

@@ -4,7 +4,6 @@ Each test pins a real bug the reviewers identified — if any of these
 fail, you've reintroduced the same class of bug.
 """
 
-import json
 import os
 import socket
 
@@ -13,7 +12,6 @@ import pytest
 # ---- stable WebView ids (Reviewer 1 #4) ---------------------------
 
 def test_webviews_have_stable_unique_ids(window):
-    from qdbrowser.webview import WebView
     a = window._active_webview
     b = window.new_tab(url="about:blank")
     c = window.new_tab(url="about:blank")
@@ -219,7 +217,7 @@ def test_safe_unlink_removes_real_socket(tmp_path):
 # ---- TOML array-of-tables (Reviewer 1 #16) ------------------------
 
 def test_toml_bookmark_dict_in_list_roundtrips(fresh_config):
-    from qdbrowser.config import CONFIG_FILE, Config
+    from qdbrowser.config import Config
     cfg = Config()
     cfg.set("bookmarks", [
         {"title": "DDG", "url": "https://duckduckgo.com"},

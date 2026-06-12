@@ -57,12 +57,12 @@ os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = _merge_chromium_flags(
 )
 
 # Make sure QtWebEngineWidgets is imported before QApplication.
-import PyQt6.QtWebEngineWidgets  # noqa: F401
-import pytest
-from PyQt6.QtCore import QCoreApplication
-from PyQt6.QtTest import QTest
-from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWidgets import QApplication
+import PyQt6.QtWebEngineWidgets  # noqa: E402, F401
+import pytest  # noqa: E402
+from PyQt6.QtCore import QCoreApplication  # noqa: E402
+from PyQt6.QtTest import QTest  # noqa: E402
+from PyQt6.QtWebEngineWidgets import QWebEngineView  # noqa: E402
+from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 
 def _drain_qt_events(app, rounds=10):

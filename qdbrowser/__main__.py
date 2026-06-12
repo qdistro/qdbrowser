@@ -25,15 +25,13 @@ import logging
 import os
 import sys
 
-from PyQt6.QtCore import Qt
-
 log = logging.getLogger("qdbrowser")
 
 # QtWebEngineWidgets must be imported before QApplication is constructed —
 # otherwise Qt raises "QtWebEngineWidgets must be imported or
 # Qt.AA_ShareOpenGLContexts must be set before a QCoreApplication
 # instance is created."
-import PyQt6.QtWebEngineWidgets  # noqa: F401
+import PyQt6.QtWebEngineWidgets  # noqa: E402, F401
 
 
 def _compose_chromium_flags():
@@ -101,9 +99,9 @@ def _apply_ca_bundle(profile):
                  profile, applied)
 
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication  # noqa: E402
 
-from qdbrowser import __version__
+from qdbrowser import __version__  # noqa: E402
 
 
 def parse_args(argv=None):

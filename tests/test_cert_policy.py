@@ -8,6 +8,7 @@ import base64
 import hashlib
 import json
 import os
+from datetime import UTC
 
 import pytest
 
@@ -19,7 +20,7 @@ import pytest
 def _make_cert_der():
     """Build a self-signed DER cert and return (der_bytes, expected_pin)."""
     pytest.importorskip("cryptography")
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
@@ -36,8 +37,8 @@ def _make_cert_der():
         .issuer_name(name)
         .public_key(key.public_key())
         .serial_number(1)
-        .not_valid_before(datetime.now(timezone.utc) - timedelta(days=1))
-        .not_valid_after(datetime.now(timezone.utc) + timedelta(days=365))
+        .not_valid_before(datetime.now(UTC) - timedelta(days=1))
+        .not_valid_after(datetime.now(UTC) + timedelta(days=365))
         .sign(private_key=key, algorithm=hashes.SHA256())
     )
     der = cert.public_bytes(serialization.Encoding.DER)

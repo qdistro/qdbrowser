@@ -3,17 +3,17 @@
 
 def test_provides_zoom_commands(window):
     plug = window.plugins._instances["page_actions"]
-    labels = [l for l, _ in plug.get_commands(window)]
-    assert any("Zoom in" in l for l in labels)
-    assert any("Zoom out" in l for l in labels)
-    assert any("Reset zoom" in l for l in labels)
+    labels = [label for label, _ in plug.get_commands(window)]
+    assert any("Zoom in" in label for label in labels)
+    assert any("Zoom out" in label for label in labels)
+    assert any("Reset zoom" in label for label in labels)
 
 
 def test_provides_mute_and_pin(window):
     plug = window.plugins._instances["page_actions"]
-    labels = [l for l, _ in plug.get_commands(window)]
-    assert any("mute" in l.lower() for l in labels)
-    assert any("pin" in l.lower() for l in labels)
+    labels = [label for label, _ in plug.get_commands(window)]
+    assert any("mute" in label.lower() for label in labels)
+    assert any("pin" in label.lower() for label in labels)
 
 
 def test_zoom_in_callback_changes_zoom(window):

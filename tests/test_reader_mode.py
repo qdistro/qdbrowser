@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 def test_plugin_has_command(window):
     plug = window.plugins._instances["reader_mode"]
     cmds = plug.get_commands(window)
-    assert any("reader" in l.lower() for l, _ in cmds)
+    assert any("reader" in label.lower() for label, _ in cmds)
 
 
 def test_toggle_with_none_safe(window):

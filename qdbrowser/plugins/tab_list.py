@@ -8,10 +8,7 @@ signals so it stays in sync without polling.
 
 from __future__ import annotations
 
-from typing import Optional
-
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QPushButton,
@@ -179,7 +176,7 @@ class TabListPlugin(SidePanelProvider, CommandProvider):
 
     def __init__(self):
         super().__init__()
-        self._panel: Optional[TabListPanel] = None
+        self._panel: TabListPanel | None = None
         self._window = None
 
     def build_panel(self, window):

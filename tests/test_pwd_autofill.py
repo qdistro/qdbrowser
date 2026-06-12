@@ -31,7 +31,7 @@ class TestMintIntentToken:
         assert tok.ts == 1234567.0
         assert isinstance(tok.request_id, str) and len(tok.request_id) == 32
         # Re-derive the HMAC and confirm it matches.
-        canonical = f"{tok.request_id}|{tok.ts}|{tok.op}".encode("utf-8")
+        canonical = f"{tok.request_id}|{tok.ts}|{tok.op}".encode()
         expected = hmac.new(secret, canonical, hashlib.sha256).hexdigest()
         assert tok.hmac_hex == expected
 
@@ -237,7 +237,7 @@ class TestOrchestratorFill:
         # HMAC matches what the bridge would compute.
         secret = bytes.fromhex(SECRET_HEX)
         canonical = (f"{token['request_id']}|{token['ts']}|"
-                     f"{token['op']}").encode("utf-8")
+                     f"{token['op']}").encode()
         expected = hmac.new(secret, canonical, hashlib.sha256).hexdigest()
         assert token["hmac"] == expected
         confirm_op, confirm_args = bridge.calls[1]

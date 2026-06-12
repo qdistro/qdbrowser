@@ -9,7 +9,6 @@ Layer 5 — Cross-silo broker mediation
 Layer 6 — Client identity / handshake
 """
 
-import collections
 import logging
 import os
 import time
@@ -755,7 +754,6 @@ def test_proc_exe_digest_returns_none_for_bogus_pid():
 
 def test_proc_exe_digest_returns_path_for_self():
     """Reading /proc/self/exe should return a valid path."""
-    import sys
 
     from qdbrowser.plugins.agent_control import _proc_exe_digest
     pid = os.getpid()

@@ -1,7 +1,6 @@
 """Downloads: history persistence + UI rebuild."""
 
 import json
-import os
 
 
 def test_load_missing(tmp_path, monkeypatch):
@@ -128,7 +127,7 @@ def test_plugin_wires_default_profile(window):
 
 def test_plugin_commands(window):
     plug = window.plugins._instances["downloads"]
-    labels = [l for l, _ in plug.get_commands(window)]
-    assert any("downloads panel" in l.lower() for l in labels)
-    assert any("downloads dir" in l.lower() for l in labels)
-    assert any("Clear" in l for l in labels)
+    labels = [label for label, _ in plug.get_commands(window)]
+    assert any("downloads panel" in label.lower() for label in labels)
+    assert any("downloads dir" in label.lower() for label in labels)
+    assert any("Clear" in label for label in labels)

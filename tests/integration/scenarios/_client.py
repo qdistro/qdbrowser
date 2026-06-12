@@ -10,7 +10,7 @@ import json
 import os
 import socket
 import time
-from typing import Any, Optional
+from typing import Any
 
 
 def default_socket_path() -> str:
@@ -19,9 +19,9 @@ def default_socket_path() -> str:
 
 
 class Client:
-    def __init__(self, socket_path: Optional[str] = None):
+    def __init__(self, socket_path: str | None = None):
         self._path = socket_path or default_socket_path()
-        self._conn: Optional[socket.socket] = None
+        self._conn: socket.socket | None = None
         self._buf = b""
         self._next_id = 1
 

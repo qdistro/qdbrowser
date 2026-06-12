@@ -53,7 +53,6 @@ import shutil
 import sqlite3
 import subprocess
 import time
-from typing import Optional
 
 log = logging.getLogger("qdbrowser.quarantine")
 
@@ -152,12 +151,12 @@ class QuarantineStore:
                quarantine_path: str,
                filename: str,
                source_url: str,
-               content_type: Optional[str] = None,
-               profile_name: Optional[str] = None,
-               tab_id: Optional[int] = None,
-               size_bytes: Optional[int] = None,
-               sha256: Optional[str] = None,
-               fetched_at: Optional[int] = None,
+               content_type: str | None = None,
+               profile_name: str | None = None,
+               tab_id: int | None = None,
+               size_bytes: int | None = None,
+               sha256: str | None = None,
+               fetched_at: int | None = None,
                scan_result: str = "pending") -> int:
         ts = int(fetched_at if fetched_at is not None else time.time())
         cur = self._db.execute(
@@ -281,7 +280,7 @@ class QuarantineStore:
             "ORDER BY fetched_at DESC LIMIT ?",
             (limit,)).fetchall()]
 
-    def get(self, row_id: int) -> Optional[dict]:
+    def get(self, row_id: int) -> dict | None:
         row = self._db.execute(
             "SELECT * FROM downloads WHERE id=?", (row_id,)).fetchone()
         return dict(row) if row else None
@@ -310,8 +309,7 @@ def run_scan(scan_command: str, path: str,
     try:
         proc = subprocess.run(
             [scan_command, path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             timeout=timeout,
             check=False)
     except (FileNotFoundError, subprocess.TimeoutExpired,
@@ -340,8 +338,7 @@ def check_release_authorized(action: str = POLKIT_RELEASE_ACTION,
             [pkcheck, "--action-id", action,
              "--process", str(pid),
              "--allow-user-interaction"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             timeout=120.0,
             check=False)
     except (FileNotFoundError, subprocess.TimeoutExpired,
@@ -354,7 +351,7 @@ def check_release_authorized(action: str = POLKIT_RELEASE_ACTION,
 def release(store: QuarantineStore,
             row_id: int,
             release_dir: str,
-            authorized: Optional[bool] = None) -> Optional[str]:
+            authorized: bool | None = None) -> str | None:
     """Move a quarantined file to ``release_dir`` after polkit consent.
 
     Returns the final path on success, ``None`` on denial.

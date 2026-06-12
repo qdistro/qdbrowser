@@ -94,7 +94,6 @@ from __future__ import annotations
 import logging
 import os
 import stat
-from typing import Optional
 
 log = logging.getLogger("qdbrowser.cert")
 
@@ -110,7 +109,7 @@ ADMIN_CERTS_DIR = "/etc/qdistro/qdbrowser/certs"
 MAX_BUNDLE_BYTES = 4 * 1024 * 1024
 
 
-def _safe_profile_name(profile: str) -> Optional[str]:
+def _safe_profile_name(profile: str) -> str | None:
     """Return ``profile`` if it is a safe single path component, else None.
 
     Profile names come from the ``--profile`` CLI arg / config and are
@@ -248,8 +247,8 @@ def _is_trusted_bundle(path: str, base_dir: str,
 
 
 def resolve_ca_bundle(profile: str,
-                      user_dir: Optional[str] = None,
-                      admin_dir: Optional[str] = None) -> Optional[str]:
+                      user_dir: str | None = None,
+                      admin_dir: str | None = None) -> str | None:
     """Return the path of a safe CA bundle for ``profile``, or None.
 
     User bundle (``<user_dir>/<profile>-ca.pem``) is preferred over the
@@ -280,9 +279,9 @@ def resolve_ca_bundle(profile: str,
 
 def apply_ca_bundle_env(profile: str,
                         config=None,
-                        user_dir: Optional[str] = None,
-                        admin_dir: Optional[str] = None,
-                        environ: Optional[dict] = None) -> Optional[str]:
+                        user_dir: str | None = None,
+                        admin_dir: str | None = None,
+                        environ: dict | None = None) -> str | None:
     """Set ``SSL_CERT_FILE`` for ``profile`` if a safe bundle exists.
 
     .. warning::

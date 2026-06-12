@@ -16,7 +16,7 @@ import json
 import os
 import socket
 import threading
-from typing import Any, Optional
+from typing import Any
 
 
 def default_socket_path() -> str:
@@ -29,7 +29,7 @@ class AgentControlClient:
 
     def __init__(self, socket_path: str):
         self._path = socket_path
-        self._conn: Optional[socket.socket] = None
+        self._conn: socket.socket | None = None
         self._buf = b""
         self._next_id = 1
         self._lock = threading.Lock()
@@ -131,7 +131,7 @@ def build_server(client: AgentControlClient, mcp=None):
         return client.call("detach", tab_id=tab_id)
 
     @mcp.tool()
-    def open_tab(url: Optional[str] = None, background: bool = False,
+    def open_tab(url: str | None = None, background: bool = False,
                  profile: str = "default") -> dict:
         """Open a new tab. Returns ``{id}``.
 
@@ -202,7 +202,7 @@ def build_server(client: AgentControlClient, mcp=None):
     @mcp.tool()
     def click_at(tab_id: int, x: float, y: float,
                  button: str = "left",
-                 modifiers: Optional[list] = None) -> dict:
+                 modifiers: list | None = None) -> dict:
         """Synthesise a click at viewport CSS pixels (x, y). The click
         is JS-dispatched (`MouseEvent` on `elementFromPoint(x,y)`), so
         framework click handlers (React, Vue, Svelte) fire correctly.
@@ -290,7 +290,7 @@ def build_server(client: AgentControlClient, mcp=None):
         return client.call("pip", tab_id=tab_id)
 
     @mcp.tool()
-    def translate(tab_id: int, target_lang: Optional[str] = None,
+    def translate(tab_id: int, target_lang: str | None = None,
                   selection_only: bool = False) -> dict:
         """Translate the page (or current selection) via the configured
         OpenAI-compatible endpoint. Overlay shows source + translation

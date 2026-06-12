@@ -15,7 +15,6 @@ import logging
 import os
 import subprocess
 import time
-from typing import Optional
 
 log = logging.getLogger("qdbrowser.downloads")
 
@@ -40,9 +39,9 @@ def _xdg_open(path: str) -> None:
     except OSError as exc:
         log.warning("xdg-open failed for %r: %s", path, exc)
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWebEngineCore import QWebEngineDownloadRequest, QWebEngineProfile
-from PyQt6.QtWidgets import (
+from PyQt6.QtCore import Qt, pyqtSignal  # noqa: E402
+from PyQt6.QtWebEngineCore import QWebEngineDownloadRequest, QWebEngineProfile  # noqa: E402
+from PyQt6.QtWidgets import (  # noqa: E402
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -53,10 +52,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from qdbrowser import webview as wv_mod
-from qdbrowser.config import CONFIG_DIR, Config
-from qdbrowser.plugin import CommandProvider, SidePanelProvider
-from qdbrowser.quarantine import QuarantineStore, _sanitize_name
+from qdbrowser import webview as wv_mod  # noqa: E402
+from qdbrowser.config import CONFIG_DIR, Config  # noqa: E402
+from qdbrowser.plugin import CommandProvider, SidePanelProvider  # noqa: E402
+from qdbrowser.quarantine import QuarantineStore, _sanitize_name  # noqa: E402
 
 HISTORY_PATH = os.path.join(CONFIG_DIR, "downloads.json")
 
@@ -219,7 +218,7 @@ def _human(n: int) -> str:
 
 
 class DownloadsPanel(QWidget):
-    def __init__(self, window, history: Optional[list] = None):
+    def __init__(self, window, history: list | None = None):
         super().__init__()
         self._window = window
         self._items: list = []
@@ -342,11 +341,11 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
 
     def __init__(self):
         super().__init__()
-        self._panel: Optional[DownloadsPanel] = None
+        self._panel: DownloadsPanel | None = None
         self._window = None
         self._wired_profiles: set = set()
         self._history = _load_history()
-        self._quarantine: Optional[QuarantineStore] = None
+        self._quarantine: QuarantineStore | None = None
 
     def activate(self, window):
         self._window = window

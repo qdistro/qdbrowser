@@ -16,8 +16,8 @@ def test_clear_after_assigned(window):
 
 def test_commands_present(window):
     plug = window.plugins._instances["tab_stacks"]
-    labels = [l for l, _ in plug.get_commands(window)]
-    assert any("Tab stack" in l for l in labels)
+    labels = [label for label, _ in plug.get_commands(window)]
+    assert any("Tab stack" in label for label in labels)
 
 
 def test_list_works_with_no_groups(window, monkeypatch):

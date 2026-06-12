@@ -6,7 +6,7 @@ resolution/safety logic and the ``SSL_CERT_FILE`` env application that
 """
 
 import os
-import stat
+from datetime import UTC
 
 import pytest
 
@@ -14,7 +14,7 @@ import pytest
 # A real (self-signed) PEM so the size check sees plausible bundle bytes.
 def _make_ca_pem():
     pytest.importorskip("cryptography")
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
@@ -29,8 +29,8 @@ def _make_ca_pem():
         .issuer_name(name)
         .public_key(key.public_key())
         .serial_number(1)
-        .not_valid_before(datetime.now(timezone.utc) - timedelta(days=1))
-        .not_valid_after(datetime.now(timezone.utc) + timedelta(days=365))
+        .not_valid_before(datetime.now(UTC) - timedelta(days=1))
+        .not_valid_after(datetime.now(UTC) + timedelta(days=365))
         .add_extension(x509.BasicConstraints(ca=True, path_length=None),
                        critical=True)
         .sign(private_key=key, algorithm=hashes.SHA256())

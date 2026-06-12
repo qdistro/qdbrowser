@@ -10,8 +10,8 @@ def test_palette_gathers_builtin_and_plugin_entries(window):
                    "Save session", "Toggle DevTools"):
         assert needed in labels, f"missing: {needed}"
     # Plugin contributions:
-    assert any("Bookmark" in l for l in labels)
-    assert any("history" in l.lower() for l in labels)
+    assert any("Bookmark" in label for label in labels)
+    assert any("history" in label.lower() for label in labels)
 
 
 def test_palette_fuzzy_filter():

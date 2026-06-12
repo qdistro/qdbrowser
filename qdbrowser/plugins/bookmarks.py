@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLineEdit,
@@ -137,9 +137,10 @@ class BookmarksPlugin(SidePanelProvider, CommandProvider):
         if self._panel:
             for b in self._panel.all():
                 title = b.get("title") or b.get("url", "")
+                url = b.get("url", "")
                 out.append((
                     f"Open: {title}",
-                    lambda u=b.get("url", ""): (
+                    lambda u=url: (
                         window._active_webview.navigate(u)
                         if window._active_webview else None
                     ),

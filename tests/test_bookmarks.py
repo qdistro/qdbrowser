@@ -1,7 +1,6 @@
 """Bookmark store + side panel behavior."""
 
 import json
-import os
 
 
 def test_load_empty_when_no_file(tmp_path, monkeypatch):
@@ -74,6 +73,6 @@ def test_panel_filter_excludes_nonmatching(window, tmp_path, monkeypatch):
 def test_plugin_get_commands(window):
     plug = window.plugins._instances["bookmarks"]
     cmds = plug.get_commands(window)
-    labels = [l for l, _ in cmds]
-    assert any("Bookmark this page" in l for l in labels)
-    assert any("bookmarks panel" in l.lower() for l in labels)
+    labels = [label for label, _ in cmds]
+    assert any("Bookmark this page" in label for label in labels)
+    assert any("bookmarks panel" in label.lower() for label in labels)

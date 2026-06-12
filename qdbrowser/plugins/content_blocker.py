@@ -29,17 +29,14 @@ import logging
 import os
 import re
 import threading
-from typing import Optional, Set
 from urllib.parse import urlparse
 
-log = logging.getLogger("qdbrowser.content_blocker")
-
-from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtWebEngineCore import QWebEngineUrlRequestInfo
-from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 from qdbrowser.config import CONFIG_DIR, Config
 from qdbrowser.plugin import CommandProvider, PageObserver, UrlInterceptor
+
+log = logging.getLogger("qdbrowser.content_blocker")
 
 HOSTS_PATH = os.path.join(CONFIG_DIR, "blocklist.hosts")
 EASYLIST_PATH = os.path.join(CONFIG_DIR, "blocklist.txt")
@@ -61,7 +58,7 @@ _DANGEROUS_REGEX_RE = re.compile(
 )
 
 
-def _safe_compile(source: str) -> Optional[re.Pattern]:
+def _safe_compile(source: str) -> re.Pattern | None:
     """Compile a regex but refuse patterns that look like ReDoS bombs."""
     if len(source) > _MAX_REGEX_LEN:
         log.warning("blocklist rule too long (%d > %d), skipped",
@@ -87,8 +84,8 @@ class _NetworkRule:
 
     def __init__(self, raw: str):
         self.raw = raw
-        self.pattern: Optional[re.Pattern] = None
-        self.host_suffix: Optional[str] = None
+        self.pattern: re.Pattern | None = None
+        self.host_suffix: str | None = None
         self.third_party_only = False
         self.is_exception = False
         self._compile(raw)
@@ -127,7 +124,7 @@ class _NetworkRule:
             esc = re.escape(line).replace(r"\*", ".*").replace(r"\^", r"[/:?=&]")
             self.pattern = _safe_compile(esc)
 
-    def matches(self, url: str, document_host: Optional[str]) -> bool:
+    def matches(self, url: str, document_host: str | None) -> bool:
         if self.host_suffix is not None:
             host = _url_host(url)
             if not host:
@@ -150,7 +147,7 @@ class _NetworkRule:
 class _CosmeticRule:
     __slots__ = ("selector", "host_suffix")
 
-    def __init__(self, host_suffix: Optional[str], selector: str):
+    def __init__(self, host_suffix: str | None, selector: str):
         self.host_suffix = host_suffix.lower() if host_suffix else None
         self.selector = selector
 
@@ -184,8 +181,8 @@ def parse_easylist(text: str):
     return network, cosmetic
 
 
-def _parse_hosts_file(path: str) -> Set[str]:
-    out: Set[str] = set()
+def _parse_hosts_file(path: str) -> set[str]:
+    out: set[str] = set()
     if not os.path.exists(path):
         return out
     try:
@@ -228,7 +225,7 @@ def _same_site(a: str, b: str) -> bool:
     return pa == pb
 
 
-def _suffix_match(host: str, set_: Set[str]) -> bool:
+def _suffix_match(host: str, set_: set[str]) -> bool:
     parts = host.split(".")
     for i in range(len(parts) - 1):
         sub = ".".join(parts[i:])
@@ -246,8 +243,8 @@ class ContentBlockerPlugin(UrlInterceptor, CommandProvider, PageObserver):
 
     def __init__(self):
         super().__init__()
-        self._blocked_hosts: Set[str] = set()
-        self._allow_hosts: Set[str] = set()
+        self._blocked_hosts: set[str] = set()
+        self._allow_hosts: set[str] = set()
         self._network_rules: list = []
         self._cosmetic_rules: list = []
         self._enabled = True

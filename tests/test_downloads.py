@@ -156,8 +156,8 @@ def test_clear_finished_removes_historical_rows(window):
 
 def test_commands_provided(window):
     plug = window.plugins._instances["downloads"]
-    labels = [l for l, _ in plug.get_commands(window)]
-    assert any("downloads" in l.lower() for l in labels)
+    labels = [label for label, _ in plug.get_commands(window)]
+    assert any("downloads" in label.lower() for label in labels)
 
 
 def test_bridge_notifies_terminal_download_state(window):

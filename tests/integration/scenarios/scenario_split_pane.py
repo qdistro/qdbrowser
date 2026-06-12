@@ -3,7 +3,7 @@ tab-management RPCs."""
 
 from __future__ import annotations
 
-from runner import emit, save_png
+from runner import emit
 
 HTML_A = "data:text/html,<title>page-A</title><body>A</body>"
 HTML_B = "data:text/html,<title>page-B</title><body>B</body>"

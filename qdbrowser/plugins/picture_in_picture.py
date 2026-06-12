@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 
-from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QKeySequence
 
 from qdbrowser.plugin import CommandProvider

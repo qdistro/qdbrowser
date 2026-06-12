@@ -47,8 +47,8 @@ import os
 import secrets
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Optional
 
 log = logging.getLogger("qdbrowser.pwd_autofill")
 
@@ -170,7 +170,7 @@ def mint_intent_token(secret: bytes, op: str,
     """
     request_id = secrets.token_hex(16)
     ts = now_fn()
-    canonical = f"{request_id}|{ts}|{op}".encode("utf-8")
+    canonical = f"{request_id}|{ts}|{op}".encode()
     mac = hmac.new(secret, canonical, hashlib.sha256).hexdigest()
     return IntentToken(request_id=request_id, ts=ts, op=op, hmac_hex=mac)
 
@@ -195,7 +195,7 @@ class AutofillPrompt:
 @dataclass
 class AutofillDecision:
     allow: bool
-    selected_username: Optional[str] = None
+    selected_username: str | None = None
     reason: str = ""
 
 
@@ -320,7 +320,7 @@ class JeepneyBridgeClient(BridgeClient):
     override via ``QDISTRO_BROWSER_BRIDGE_PPID`` for the dev path
     where the bridge is launched standalone."""
 
-    def __init__(self, ppid: Optional[int] = None,
+    def __init__(self, ppid: int | None = None,
                  timeout_s: float = 10.0):
         self._ppid = ppid
         self._timeout_s = float(timeout_s)
@@ -466,8 +466,8 @@ class AutofillOrchestrator:
 
     bridge: BridgeClient
     prompt: AutofillPromptClient
-    silo: Optional[str] = None
-    _session_secret: Optional[bytes] = field(default=None, repr=False)
+    silo: str | None = None
+    _session_secret: bytes | None = field(default=None, repr=False)
     _fill_lock: threading.Lock = field(
         default_factory=threading.Lock, repr=False)
 
@@ -493,7 +493,7 @@ class AutofillOrchestrator:
     def has_session(self) -> bool:
         return self._session_secret is not None
 
-    def _do_fill(self, url: str, username: Optional[str]
+    def _do_fill(self, url: str, username: str | None
                  ) -> FillResult:
         """Single attempt: mint → bridge → prompt → result. Does not
         re-handshake on bad HMAC; the public :meth:`fill` does that
@@ -567,7 +567,7 @@ class AutofillOrchestrator:
             password=str(confirmed.get("password", "")),
         )
 
-    def fill(self, url: str, *, username: Optional[str] = None,
+    def fill(self, url: str, *, username: str | None = None,
              ) -> FillResult:
         """Run the pwd.fill round-trip end-to-end.
 
@@ -644,7 +644,7 @@ class AutofillOrchestrator:
 # Module-level convenience for the in-tree integration tests
 # ---------------------------------------------------------------------------
 
-def perform_handshake(bridge: BridgeClient) -> Optional[str]:
+def perform_handshake(bridge: BridgeClient) -> str | None:
     """Run ``qdistro.handshake`` against the bridge to fetch the
     per-session HMAC secret. Returns the hex secret or ``None`` on
     failure (logged once at WARN).

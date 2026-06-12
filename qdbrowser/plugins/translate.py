@@ -24,13 +24,11 @@ import json
 import logging
 import os
 import threading
-import time
 import urllib.error
 import urllib.request
-from typing import Callable, Optional
 from urllib.parse import urlparse
 
-from PyQt6.QtCore import QObject, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence
 
 from qdbrowser.config import Config
@@ -208,19 +206,19 @@ class TranslatePlugin(CommandProvider):
 
     # -- public API ----------------------------------------------------
 
-    def translate_page(self, webview, target_lang: Optional[str] = None):
+    def translate_page(self, webview, target_lang: str | None = None):
         if webview is None:
             return
         self._extract(webview, EXTRACT_TEXT_JS, target_lang)
 
-    def translate_selection(self, webview, target_lang: Optional[str] = None):
+    def translate_selection(self, webview, target_lang: str | None = None):
         if webview is None:
             return
         self._extract(webview, GET_SELECTION_JS, target_lang)
 
     # -- internals -----------------------------------------------------
 
-    def _extract(self, webview, js: str, target_lang: Optional[str]):
+    def _extract(self, webview, js: str, target_lang: str | None):
         def on_text(text):
             if not text:
                 self._notify(webview, "(no text to translate)")
@@ -228,7 +226,7 @@ class TranslatePlugin(CommandProvider):
             self._kick_off(webview, text, target_lang)
         webview.view.page().runJavaScript(js, on_text)
 
-    def _kick_off(self, webview, text: str, target_lang: Optional[str]):
+    def _kick_off(self, webview, text: str, target_lang: str | None):
         cfg = Config()
         target_lang = target_lang or cfg.get(
             "translate", "target_lang", default="English") or "English"
@@ -313,7 +311,7 @@ class TranslatePlugin(CommandProvider):
     # -- agent RPC -----------------------------------------------------
 
     def _rpc_translate(self, client, tab_id: int,
-                       target_lang: Optional[str] = None,
+                       target_lang: str | None = None,
                        selection_only: bool = False):
         if tab_id not in client.attached_tabs:
             raise _RpcError(-32001, "not attached")

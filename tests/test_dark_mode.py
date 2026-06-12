@@ -105,8 +105,8 @@ def test_apply_none_safe(fresh_config):
 
 def test_commands_include_global_cycle(fresh_config, window):
     plug = window.plugins._instances["dark_mode"]
-    labels = [l for l, _ in plug.get_commands(window)]
-    assert any("Force dark" in l for l in labels)
+    labels = [label for label, _ in plug.get_commands(window)]
+    assert any("Force dark" in label for label in labels)
 
 
 def test_on_load_finished_calls_apply(fresh_config, window):

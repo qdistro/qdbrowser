@@ -31,7 +31,8 @@ import queue
 import select
 import subprocess
 import threading
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 from qdbrowser.config import Config
 from qdbrowser.plugin import Plugin
@@ -200,8 +201,8 @@ def _clamp_search_limit(limit: Any) -> int:
     return min(n, _MAX_SEARCH_LIMIT)
 
 
-def polkit_check(action_id: str, caller_pid: Optional[int],
-                 caller_start_time: Optional[int] = None,
+def polkit_check(action_id: str, caller_pid: int | None,
+                 caller_start_time: int | None = None,
                  pkcheck_bin: str = "pkcheck") -> bool:
     """Return True iff polkit authorises ``action_id`` for ``caller_pid``.
 
@@ -319,7 +320,7 @@ class PagesProxy:
 
     _VALID_MODES = ("text", "html", "selection")
 
-    def __init__(self, window, run_js: Optional[Callable] = None):
+    def __init__(self, window, run_js: Callable | None = None):
         self._window = window
         # ``run_js`` is the synchronous-with-timeout helper from
         # agent_control. We accept it as a constructor arg so tests
@@ -503,7 +504,7 @@ class DaemonForwarder:
     (logged) so a transient daemon outage never breaks a download.
     """
 
-    def __init__(self, call: Optional[Callable[..., dict]] = None):
+    def __init__(self, call: Callable[..., dict] | None = None):
         self._call = call
 
     def _client(self) -> Callable[..., dict]:
@@ -537,7 +538,7 @@ class DaemonForwarder:
     def publish_media(self, *, title: str = "", artist: str = "",
                       album: str = "", state: str = "stopped",
                       position_us: int = 0,
-                      tab_id: Optional[int] = None) -> dict:
+                      tab_id: int | None = None) -> dict:
         """Forward a media snapshot to ``org.qdistro.Mpris`` so the admin
         media widget shows qdbrowser playback alongside Firefox/Chrome."""
         body = {
@@ -623,7 +624,7 @@ class HistoryProxy:
             # Format timestamp as ISO-8601 string for D-Bus transport.
             try:
                 ts_str = datetime.datetime.fromtimestamp(
-                    float(ts), tz=datetime.timezone.utc
+                    float(ts), tz=datetime.UTC
                 ).isoformat()
             except (ValueError, OSError, OverflowError):
                 ts_str = ""
@@ -681,9 +682,9 @@ class BridgeAdapterHandlers:
 
     def __init__(self, tabs: TabsProxy, pages: PagesProxy,
                  downloads: DownloadsProxy, media: MediaProxy,
-                 polkit: Callable[[str, Optional[int]], bool] = polkit_check,
-                 history: Optional["HistoryProxy"] = None,
-                 bookmarks: Optional["BookmarksProxy"] = None):
+                 polkit: Callable[[str, int | None], bool] = polkit_check,
+                 history: HistoryProxy | None = None,
+                 bookmarks: BookmarksProxy | None = None):
         self.tabs = tabs
         self.pages = pages
         self.downloads = downloads
@@ -692,8 +693,8 @@ class BridgeAdapterHandlers:
         self.bookmarks = bookmarks
         self._polkit = polkit
 
-    def authorize(self, method: str, caller_pid: Optional[int] = None,
-                  caller_start_time: Optional[int] = None) -> None:
+    def authorize(self, method: str, caller_pid: int | None = None,
+                  caller_start_time: int | None = None) -> None:
         """Resolve+enforce the polkit gate for ``method``.
 
         Runs the (potentially slow / interactive) polkit check WITHOUT
@@ -752,8 +753,8 @@ class BridgeAdapterHandlers:
         self._polkit_start_time_ok = accepts
         return accepts
 
-    def _call_polkit(self, action: str, caller_pid: Optional[int],
-                     caller_start_time: Optional[int]) -> bool:
+    def _call_polkit(self, action: str, caller_pid: int | None,
+                     caller_start_time: int | None) -> bool:
         """Invoke the polkit hook, passing ``caller_start_time`` when the
         hook signature accepts it (the default :func:`polkit_check`
         does). Test/sibling hooks supplying only ``(action, pid)`` keep
@@ -767,8 +768,8 @@ class BridgeAdapterHandlers:
                             caller_start_time=caller_start_time)
 
     def dispatch(self, method: str, args: tuple,
-                 caller_pid: Optional[int] = None,
-                 caller_start_time: Optional[int] = None
+                 caller_pid: int | None = None,
+                 caller_start_time: int | None = None
                  ) -> tuple[tuple, str]:
         """Authorize then invoke ``method`` in one call.
 
@@ -782,7 +783,7 @@ class BridgeAdapterHandlers:
         return self.invoke(method, args, caller_pid=caller_pid)
 
     def invoke(self, method: str, args: tuple,
-               caller_pid: Optional[int] = None) -> tuple[tuple, str]:
+               caller_pid: int | None = None) -> tuple[tuple, str]:
         """Execute an already-authorized ``method``.
 
         MUST run on the GUI thread (it touches Qt proxies). Callers are
@@ -878,7 +879,7 @@ def _daemons_available() -> bool:
     return bool(names)
 
 
-def _enabled_config_override() -> Optional[bool]:
+def _enabled_config_override() -> bool | None:
     """Return explicit bridge_adapter config, or None for autodetect."""
     value = Config().get("plugins", "bridge_adapter", default=_UNSET)
     if value is _UNSET:
@@ -914,8 +915,8 @@ class _ForwardWorker:
     _MAX_PENDING = 256
 
     def __init__(self):
-        self._queue: "queue.Queue" = queue.Queue(self._MAX_PENDING)
-        self._thread: Optional[threading.Thread] = None
+        self._queue: queue.Queue = queue.Queue(self._MAX_PENDING)
+        self._thread: threading.Thread | None = None
         self._stop = threading.Event()
 
     def start(self) -> None:
@@ -1074,20 +1075,20 @@ class BridgeAdapterPlugin(Plugin):
         # send_and_get_reply doesn't consume inbound method-call
         # messages from the main receive connection.
         self._pid_conn = None
-        self._bus_name: Optional[str] = None
-        self._handlers: Optional[BridgeAdapterHandlers] = None
-        self.tabs_proxy: Optional[TabsProxy] = None
-        self.pages_proxy: Optional[PagesProxy] = None
-        self.downloads_proxy: Optional[DownloadsProxy] = None
-        self.media_proxy: Optional[MediaProxy] = None
-        self.history_proxy: Optional[HistoryProxy] = None
-        self.bookmarks_proxy: Optional[BookmarksProxy] = None
+        self._bus_name: str | None = None
+        self._handlers: BridgeAdapterHandlers | None = None
+        self.tabs_proxy: TabsProxy | None = None
+        self.pages_proxy: PagesProxy | None = None
+        self.downloads_proxy: DownloadsProxy | None = None
+        self.media_proxy: MediaProxy | None = None
+        self.history_proxy: HistoryProxy | None = None
+        self.bookmarks_proxy: BookmarksProxy | None = None
         # Step-4 outbound forwarder to the Phase-9e Downloads/MPRIS daemons.
-        self.forwarder: Optional[DaemonForwarder] = None
+        self.forwarder: DaemonForwarder | None = None
         self._media_connections: dict = {}
         self._audible_tabs: set[int] = set()
         self._media_tabs: set[int] = set()
-        self._recv_thread: Optional[threading.Thread] = None
+        self._recv_thread: threading.Thread | None = None
         self._dispatch_helper = _DispatchHelper()
         # Runs outbound daemon forwards off the GUI thread.
         self._forward_worker = _ForwardWorker()
@@ -1100,12 +1101,12 @@ class BridgeAdapterPlugin(Plugin):
     # -- public hooks exposed for tests + sibling plugins ----
 
     @property
-    def bus_name(self) -> Optional[str]:
+    def bus_name(self) -> str | None:
         """The per-pid well-known D-Bus name this adapter claims."""
         return self._bus_name
 
     @property
-    def handlers(self) -> Optional[BridgeAdapterHandlers]:
+    def handlers(self) -> BridgeAdapterHandlers | None:
         return self._handlers
 
     def emit_tab_added(self, tab_id: int, url: str) -> None:
@@ -1143,7 +1144,7 @@ class BridgeAdapterPlugin(Plugin):
 
     def emit_media_state_changed(self, state: str, *, title: str = "",
                                  artist: str = "",
-                                 tab_id: Optional[int] = None) -> None:
+                                 tab_id: int | None = None) -> None:
         self._emit_signal("MediaStateChanged", (str(state),), "s")
         # Step-4: republish via the MPRIS daemon. Pull the current
         # title/artist off the media proxy so the admin widget shows
@@ -1479,7 +1480,7 @@ class BridgeAdapterPlugin(Plugin):
             self._publish_media_for_webview(wv, "stopped")
 
     @staticmethod
-    def _webview_tab_id(wv) -> Optional[int]:
+    def _webview_tab_id(wv) -> int | None:
         try:
             return int(getattr(wv, "stable_id", getattr(wv, "_stable_id", 0)))
         except Exception:
@@ -1611,10 +1612,9 @@ class BridgeAdapterPlugin(Plugin):
                 self._handlers.authorize(
                     member, caller_pid=caller_pid,
                     caller_start_time=caller_start)
-                _member, _body, _pid = member, msg.body, caller_pid
                 body, sig = self._dispatch_helper.call_on_main_thread(
-                    lambda: self._handlers.invoke(
-                        _member, _body, caller_pid=_pid))
+                    lambda _member=member, _body=msg.body, _pid=caller_pid:
+                        self._handlers.invoke(_member, _body, caller_pid=_pid))
                 reply = new_method_return(msg, sig, body)
             except PermissionError as exc:
                 reply = new_error(
@@ -1637,8 +1637,8 @@ class BridgeAdapterPlugin(Plugin):
             except Exception as exc:
                 log.debug("send reply for %s failed: %s", member, exc)
 
-    def _resolve_sender_pid(self, sender: Optional[str]
-                            ) -> Optional[int]:
+    def _resolve_sender_pid(self, sender: str | None
+                            ) -> int | None:
         """Ask the bus daemon for the Unix PID of ``sender``.
 
         Returns the PID as an int, or raises ``PermissionError`` if
@@ -1678,8 +1678,8 @@ class BridgeAdapterPlugin(Plugin):
             f"could not resolve PID for D-Bus sender {sender!r}")
 
     @staticmethod
-    def _resolve_sender_start_time(caller_pid: Optional[int]
-                                   ) -> Optional[int]:
+    def _resolve_sender_start_time(caller_pid: int | None
+                                   ) -> int | None:
         """Read the caller PID's kernel start-time (clock ticks since
         boot) from ``/proc/<pid>/stat`` field 22.
 

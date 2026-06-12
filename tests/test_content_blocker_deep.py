@@ -99,10 +99,10 @@ def test_get_commands_returns_baseline(fresh_config):
     # Pass a fake window with no active webview so the per-site rows
     # aren't appended.
     cmds = plug.get_commands(None)
-    labels = [l for l, _ in cmds]
-    assert any("Content blocker" in l for l in labels)
-    assert any("stats" in l.lower() for l in labels)
-    assert any("Reload" in l for l in labels)
+    labels = [label for label, _ in cmds]
+    assert any("Content blocker" in label for label in labels)
+    assert any("stats" in label.lower() for label in labels)
+    assert any("Reload" in label for label in labels)
 
 
 def test_extra_blocked_loaded_from_config(fresh_config):

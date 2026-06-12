@@ -31,8 +31,7 @@ from __future__ import annotations
 
 import fnmatch
 import logging
-import re
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 log = logging.getLogger("qdbrowser.security")
 
@@ -81,7 +80,7 @@ class SecurityInterceptor:
         # The "default" UA value the page started with — captured so
         # strict-mode can distinguish a JS-side spoof from a legitimate
         # preset.
-        self._baseline_ua: Optional[str] = None
+        self._baseline_ua: str | None = None
 
     # -- public hook for the WebView chain -----------------------------
 

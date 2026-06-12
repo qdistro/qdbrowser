@@ -22,7 +22,6 @@ from __future__ import annotations
 import datetime
 import logging
 import os
-from typing import Optional
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -45,7 +44,7 @@ from qdbrowser.quarantine import QuarantineStore
 log = logging.getLogger("qdbrowser.quarantine_panel")
 
 
-def _format_timestamp(ts: Optional[int]) -> str:
+def _format_timestamp(ts: int | None) -> str:
     if not ts:
         return "?"
     try:
@@ -96,7 +95,7 @@ class QuarantineController:
         return [_row_summary(r) for r in self._store.list_pending()]
 
     def release(self, row_id: int, target_dir: str,
-                authorize=None) -> Optional[str]:
+                authorize=None) -> str | None:
         """Release ``row_id`` into ``target_dir`` after the polkit gate.
 
         Returns the final on-disk path on success, ``None`` if the gate
@@ -260,11 +259,11 @@ class QuarantinePanelPlugin(SidePanelProvider, CommandProvider):
 
     def __init__(self):
         super().__init__()
-        self._panel: Optional[QuarantinePanel] = None
+        self._panel: QuarantinePanel | None = None
         self._window = None
-        self._controller: Optional[QuarantineController] = None
+        self._controller: QuarantineController | None = None
 
-    def _open_store(self) -> Optional[QuarantineController]:
+    def _open_store(self) -> QuarantineController | None:
         if self._controller is not None:
             return self._controller
         cfg = Config()

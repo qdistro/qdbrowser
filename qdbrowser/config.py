@@ -5,7 +5,6 @@ pattern (so tests can `Config._instance = None` to reset between cases).
 """
 
 import copy
-import json
 import os
 
 try:

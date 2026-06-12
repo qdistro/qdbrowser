@@ -16,24 +16,15 @@ simple; persistent profiles (cookies, cache, history) attach via
 from __future__ import annotations
 
 import os
-from typing import Optional
 
 from PyQt6.QtCore import (
-    QEvent,
-    QObject,
-    QPoint,
-    QPointF,
-    QSize,
-    Qt,
-    QTimer,
     QUrl,
     pyqtSignal,
 )
-from PyQt6.QtGui import QIcon, QPainter
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWebEngineCore import (
     QWebEnginePage,
     QWebEngineProfile,
-    QWebEngineSettings,
     QWebEngineUrlRequestInterceptor,
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -80,7 +71,7 @@ _UA_PRESETS = {
 }
 
 
-def resolve_user_agent(config=None) -> Optional[str]:
+def resolve_user_agent(config=None) -> str | None:
     """Resolve the single configured User-Agent string, or ``None`` to mean
     "use the Qt/Chromium default" (consistent across profiles in one build).
 
@@ -292,7 +283,7 @@ class WebView(QWidget):
     close_requested = pyqtSignal(object)               # (self,)
 
     def __init__(self,
-                 url: Optional[str] = None,
+                 url: str | None = None,
                  profile_name: str = "default",
                  parent=None):
         super().__init__(parent)
@@ -301,7 +292,7 @@ class WebView(QWidget):
         self._profile = get_profile(profile_name)
         self._profile_name = profile_name
         self._stable_id: int = _alloc_webview_id()
-        self.group: Optional[str] = None  # tab-stack name
+        self.group: str | None = None  # tab-stack name
         self.pinned: bool = False
         self.muted: bool = False
         self._zoom: float = 1.0

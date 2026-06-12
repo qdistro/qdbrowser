@@ -6,7 +6,6 @@ block). Pattern matches the FakeInfo helper in test_content_blocker_deep.
 """
 
 import logging
-from unittest.mock import MagicMock
 
 import pytest
 

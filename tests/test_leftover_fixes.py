@@ -1,10 +1,6 @@
 """Regression tests for the round-3 leftover fixes."""
 
-import json
 import os
-import socket
-import threading
-import time
 
 import pytest
 

@@ -15,7 +15,6 @@ def test_restore_unknown_returns_none():
 
 
 def test_roundtrip_preserves_orientation(window):
-    from qdbrowser.splitter import SplitContainer
     split = window._tabs.widget(0)
     # Mutate orientation to vertical via a split.
     window._split(Qt.Orientation.Vertical)

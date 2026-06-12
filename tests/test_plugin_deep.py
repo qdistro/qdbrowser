@@ -1,6 +1,5 @@
 """Deeper coverage of the plugin system."""
 
-import os
 
 import pytest
 

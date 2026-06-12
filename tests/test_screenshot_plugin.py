@@ -1,7 +1,6 @@
 """Screenshot plugin: viewport capture is testable; full-page needs
 QtWebEngine rendering which is fragile in headless mode, so we mock JS."""
 
-from unittest.mock import MagicMock
 
 
 def test_save_dir_exists(tmp_path, monkeypatch):
@@ -32,6 +31,6 @@ def test_capture_full_none_returns_none(window):
 
 def test_commands_provided(window):
     plug = window.plugins._instances["screenshot"]
-    labels = [l for l, _ in plug.get_commands(window)]
-    assert any("Screenshot" in l for l in labels)
-    assert any("viewport" in l for l in labels)
+    labels = [label for label, _ in plug.get_commands(window)]
+    assert any("Screenshot" in label for label in labels)
+    assert any("viewport" in label for label in labels)

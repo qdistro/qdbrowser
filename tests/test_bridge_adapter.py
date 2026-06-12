@@ -8,8 +8,6 @@ and is idempotent across deactivate/activate cycles.
 import sys
 import types
 
-import pytest
-
 
 def test_plugin_loads():
     from qdbrowser.plugins.bridge_adapter import BridgeAdapterPlugin

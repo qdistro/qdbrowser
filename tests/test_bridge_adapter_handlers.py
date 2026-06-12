@@ -814,7 +814,6 @@ def test_polkit_check_history_and_bookmarks_consult_pkcheck(monkeypatch):
 def test_recv_loop_dispatches_method_call(monkeypatch):
     """Verify _recv_loop routes a method_call message to the handlers
     and sends the reply, using mock objects for jeepney."""
-    import types
 
     plugin = ba.BridgeAdapterPlugin()
     plugin._active = True

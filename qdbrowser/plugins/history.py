@@ -194,9 +194,10 @@ class HistoryPlugin(SidePanelProvider, PageObserver, CommandProvider):
                 lambda: window._side_panel.show_panel(self.panel_id))]
         for r in self._store.all()[:30]:
             title = r.get("title") or r.get("url", "")
+            url = r.get("url", "")
             out.append((
                 f"History: {title}",
-                lambda u=r.get("url", ""): (
+                lambda u=url: (
                     window._active_webview.navigate(u)
                     if window._active_webview else None
                 ),

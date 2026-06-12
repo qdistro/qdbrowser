@@ -35,13 +35,13 @@ def test_dialog_filter_narrows(window):
 def test_dialog_includes_all_provider_commands(window):
     from qdbrowser.plugins.command_palette import CommandPaletteDialog
     dlg = CommandPaletteDialog(window)
-    labels = [l for l, _ in dlg._entries]
+    labels = [label for label, _ in dlg._entries]
     # From every plugin that provides commands.
-    assert any("history" in l.lower() for l in labels)
-    assert any("bookmark" in l.lower() for l in labels)
-    assert any("note" in l.lower() for l in labels)
-    assert any("session" in l.lower() for l in labels)
-    assert any("workspace" in l.lower() for l in labels)
+    assert any("history" in label.lower() for label in labels)
+    assert any("bookmark" in label.lower() for label in labels)
+    assert any("note" in label.lower() for label in labels)
+    assert any("session" in label.lower() for label in labels)
+    assert any("workspace" in label.lower() for label in labels)
 
 
 def test_dialog_first_item_selected_on_open(window):

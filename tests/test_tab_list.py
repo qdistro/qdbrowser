@@ -69,8 +69,8 @@ def test_click_focuses_tab(window):
 
 def test_commands_provided(window):
     plug = window.plugins._instances["tab_list"]
-    labels = [l for l, _ in plug.get_commands(window)]
-    assert any("tab list" in l.lower() for l in labels)
+    labels = [label for label, _ in plug.get_commands(window)]
+    assert any("tab list" in label.lower() for label in labels)
 
 
 def _all_leaves(panel):

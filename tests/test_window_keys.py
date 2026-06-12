@@ -1,6 +1,5 @@
 """Keyboard shortcut wiring on MainWindow."""
 
-from PyQt6.QtGui import QKeySequence
 
 
 def _shortcuts_for(window):

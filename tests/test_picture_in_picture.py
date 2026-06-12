@@ -11,8 +11,8 @@ def test_pip_js_contains_request_call():
 
 def test_plugin_commands(window):
     plug = window.plugins._instances["picture_in_picture"]
-    labels = [l for l, _ in plug.get_commands(window)]
-    assert any("Picture-in-Picture" in l for l in labels)
+    labels = [label for label, _ in plug.get_commands(window)]
+    assert any("Picture-in-Picture" in label for label in labels)
 
 
 def test_toggle_calls_runjs(window):

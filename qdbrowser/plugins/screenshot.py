@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import os
 import time
 
-from PyQt6.QtCore import QBuffer, QByteArray, QIODevice
 from PyQt6.QtGui import QImage, QPainter
-from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
-from qdbrowser.config import Config
 from qdbrowser.plugin import CommandProvider
 
 

@@ -39,7 +39,7 @@ import hashlib
 import json
 import logging
 import os
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 log = logging.getLogger("qdbrowser.cert")
 
@@ -73,8 +73,8 @@ class PinStore:
     """In-memory pin map + override set."""
 
     def __init__(self,
-                 pins: Optional[dict] = None,
-                 overrides: Optional[Iterable[str]] = None):
+                 pins: dict | None = None,
+                 overrides: Iterable[str] | None = None):
         # Normalize: lowercase host keys, strip any non-canonical pins.
         self._pins: dict = {}
         for host, raw in (pins or {}).items():
@@ -137,7 +137,7 @@ class PinStore:
                            f"none of {chain_hashes} in {pins}")
 
 
-def spki_hash_from_der(der: bytes) -> Optional[str]:
+def spki_hash_from_der(der: bytes) -> str | None:
     """Return the ``sha256/<b64>`` pin string for a DER certificate.
 
     The SPKI is extracted with a minimal-dependency DER walk:
@@ -186,7 +186,7 @@ def _read_tlv(buf: bytes, off: int):
     return tag, buf[off:end], end
 
 
-def _extract_spki(der: bytes) -> Optional[bytes]:
+def _extract_spki(der: bytes) -> bytes | None:
     """Walk a DER Certificate and return the SubjectPublicKeyInfo bytes
     (the full ``SEQUENCE`` TLV, including outer tag/length — that is
     what HPKP hashes)."""
@@ -225,9 +225,9 @@ def _extract_spki(der: bytes) -> Optional[bytes]:
     return bytes(tbs_inner[start:off])
 
 
-def load_pin_store(system_path: Optional[str] = None,
-                   user_path: Optional[str] = None,
-                   overrides_path: Optional[str] = None) -> PinStore:
+def load_pin_store(system_path: str | None = None,
+                   user_path: str | None = None,
+                   overrides_path: str | None = None) -> PinStore:
     """Load the pin store. Missing files are treated as empty maps —
     qdbrowser must never refuse to start because the admin file isn't
     there yet.

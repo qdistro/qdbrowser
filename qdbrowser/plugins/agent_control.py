@@ -14,7 +14,6 @@ Wire format: newline-delimited JSON-RPC 2.0. Server-pushed events have
 
 from __future__ import annotations
 
-import base64
 import collections
 import hashlib
 import json
@@ -26,7 +25,6 @@ import socket
 import stat
 import struct
 import time
-from typing import Any, Optional
 
 log = logging.getLogger("qdbrowser.agent_control")
 
@@ -63,7 +61,7 @@ _REDACT_PARAM_KEYS = frozenset({
 # leak as recording it to history.jsonl.
 _URL_PARAM_KEYS = frozenset({"url"})
 
-from PyQt6.QtCore import (
+from PyQt6.QtCore import (  # noqa: E402
     QBuffer,
     QByteArray,
     QEvent,
@@ -71,23 +69,19 @@ from PyQt6.QtCore import (
     QObject,
     QPoint,
     QPointF,
-    QSize,
     QSocketNotifier,
     Qt,
     QTimer,
-    QUrl,
 )
-from PyQt6.QtGui import (
+from PyQt6.QtGui import (  # noqa: E402
     QKeyEvent,
-    QKeySequence,
     QMouseEvent,
-    QWheelEvent,
 )
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication  # noqa: E402
 
-from qdbrowser.config import Config
-from qdbrowser.plugin import Plugin
-from qdbrowser.webview import WebView
+from qdbrowser.config import Config  # noqa: E402
+from qdbrowser.plugin import Plugin  # noqa: E402
+from qdbrowser.webview import WebView  # noqa: E402
 
 
 def _socket_path() -> str:
@@ -135,7 +129,7 @@ def _peer_uid_matches(conn: socket.socket) -> bool:
         return False
 
 
-def _peer_creds(conn: socket.socket) -> tuple[Optional[int], Optional[int]]:
+def _peer_creds(conn: socket.socket) -> tuple[int | None, int | None]:
     """Return ``(pid, uid)`` from SO_PEERCRED, or ``(None, None)`` on
     failure. Split from ``_peer_uid_matches`` so the L6 exe check has
     the pid without re-querying the kernel."""
@@ -321,7 +315,7 @@ def _broker_check(method: str, params: dict, *, bus_name: str,
 
 # -- Layer 6: client exe identity -----------------------------------------
 
-def _file_sha256(path: str) -> Optional[str]:
+def _file_sha256(path: str) -> str | None:
     """SHA256 of a file by absolute path. Returns ``None`` on any error
     (file missing, perm denied, race during read). Caller decides whether
     that's fatal."""
@@ -331,11 +325,11 @@ def _file_sha256(path: str) -> Optional[str]:
             for chunk in iter(lambda: f.read(65536), b""):
                 h.update(chunk)
         return h.hexdigest()
-    except (OSError, IOError):
+    except OSError:
         return None
 
 
-def _proc_exe_digest(pid: int) -> tuple[Optional[str], Optional[str]]:
+def _proc_exe_digest(pid: int) -> tuple[str | None, str | None]:
     """Return ``(exe_path, sha256_hex)`` for /proc/<pid>/exe.
 
     Reads the link (so we record what the kernel sees, not what the
@@ -476,10 +470,10 @@ class _AttachState:
 # -- Client connection wrapper --
 
 class _Client(QObject):
-    def __init__(self, conn: socket.socket, server: "_AgentServer",
-                 *, pid: Optional[int] = None,
-                 exe_path: Optional[str] = None,
-                 exe_digest: Optional[str] = None):
+    def __init__(self, conn: socket.socket, server: _AgentServer,
+                 *, pid: int | None = None,
+                 exe_path: str | None = None,
+                 exe_digest: str | None = None):
         super().__init__()
         self._conn = conn
         self._fd = conn.fileno()
@@ -496,8 +490,8 @@ class _Client(QObject):
         # L6: handshake state. When ``require_handshake`` is True,
         # the client must send a handshake message before any RPC.
         self.handshake_done = False
-        self.handshake_exe: Optional[str] = None
-        self.handshake_pid: Optional[int] = None
+        self.handshake_exe: str | None = None
+        self.handshake_pid: int | None = None
         # L4: per-client sliding-window token buckets, reset on
         # disconnect by virtue of being instance attributes.
         self.bucket_total = _RateBucket()
@@ -587,13 +581,13 @@ class _Client(QObject):
 # -- Server (listener) --
 
 class _AgentServer(QObject):
-    def __init__(self, plugin: "AgentControlPlugin", window):
+    def __init__(self, plugin: AgentControlPlugin, window):
         super().__init__()
         self._plugin = plugin
         self._window = window
         self._path = _socket_path()
-        self._sock: Optional[socket.socket] = None
-        self._notifier: Optional[QSocketNotifier] = None
+        self._sock: socket.socket | None = None
+        self._notifier: QSocketNotifier | None = None
         self._clients: dict[int, _Client] = {}
 
     @property
@@ -701,7 +695,7 @@ class _AgentServer(QObject):
         """Send a non-tab-scoped event to every connected client."""
         msg = {"event": event_type, **payload}
         line = (json.dumps(msg) + "\n").encode("utf-8")
-        for fd, client in list(self._clients.items()):
+        for _fd, client in list(self._clients.items()):
             client.send_raw(line)
 
     def _targets_off_the_record(self, method, params) -> bool:
@@ -873,7 +867,7 @@ class AgentControlPlugin(Plugin):
     def __init__(self):
         super().__init__()
         self._window = None
-        self._server: Optional[_AgentServer] = None
+        self._server: _AgentServer | None = None
         self.tab_states: dict[int, _AttachState] = {}
         # Instance-level RPC dispatch — other plugins (PiP, translate)
         # add verbs via ``register_method`` instead of monkey-patching
@@ -881,8 +875,8 @@ class AgentControlPlugin(Plugin):
         self._methods: dict[str, callable] = {}
         # L6 cache: resolved at first use, refreshed when config
         # mutates from underneath us (tests do this a lot).
-        self._allowed_exes_cache: Optional[set[str]] = None
-        self._allowed_exes_signature: Optional[tuple] = None
+        self._allowed_exes_cache: set[str] | None = None
+        self._allowed_exes_signature: tuple | None = None
 
     @staticmethod
     def _is_enabled() -> bool:
@@ -1023,7 +1017,7 @@ class AgentControlPlugin(Plugin):
         except Exception:
             return False
 
-    def _handle_handshake(self, client: "_Client", req: dict) -> dict:
+    def _handle_handshake(self, client: _Client, req: dict) -> dict:
         """Process a ``{op: "handshake", exe: "...", pid: N}`` frame.
 
         Verifies ``/proc/<pid>/exe`` against the claimed path (audit
@@ -1133,7 +1127,7 @@ class AgentControlPlugin(Plugin):
 
     # -- Layer 4: rate limiting ----------------------------------------
 
-    def _rate_check(self, client: "_Client", method: str
+    def _rate_check(self, client: _Client, method: str
                      ) -> tuple[bool, str, float]:
         """Return ``(allowed, reason, retry_after)`` for an RPC against
         this client's token buckets. Does not mutate buckets on denial.
@@ -1298,7 +1292,7 @@ class AgentControlPlugin(Plugin):
                 pass
 
     @property
-    def socket_path(self) -> Optional[str]:
+    def socket_path(self) -> str | None:
         return self._server.socket_path if self._server else None
 
     # -- enumeration helpers --
@@ -1433,7 +1427,7 @@ class AgentControlPlugin(Plugin):
         client.attached_tabs.discard(tab_id)
         return {"ok": True}
 
-    def rpc_open_tab(self, _client, url: Optional[str] = None,
+    def rpc_open_tab(self, _client, url: str | None = None,
                      background: bool = False,
                      profile: str = "default"):
         if not self._window:
@@ -1536,7 +1530,7 @@ class AgentControlPlugin(Plugin):
     # -- RPC: input injection --
 
     def rpc_click_at(self, client, tab_id: int, x: float, y: float,
-                     button: str = "left", modifiers: Optional[list] = None):
+                     button: str = "left", modifiers: list | None = None):
         if tab_id not in client.attached_tabs:
             raise _RpcError(-32001, "not attached")
         wv = self._get_webview(tab_id)

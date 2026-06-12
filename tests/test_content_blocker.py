@@ -1,6 +1,5 @@
 """Content blocker: hosts parsing + suffix matching."""
 
-import os
 
 
 def test_suffix_match():

@@ -28,9 +28,9 @@ def test_save_writes_json(tmp_path, monkeypatch):
 
 def test_plugin_commands_include_save(window):
     plug = window.plugins._instances["workspaces"]
-    labels = [l for l, _ in plug.get_commands(window)]
-    assert any("Workspace" in l for l in labels)
-    assert any("save" in l.lower() for l in labels)
+    labels = [label for label, _ in plug.get_commands(window)]
+    assert any("Workspace" in label for label in labels)
+    assert any("save" in label.lower() for label in labels)
 
 
 def test_switch_unknown_workspace(window):

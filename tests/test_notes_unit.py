@@ -64,6 +64,6 @@ def test_panel_delete(window, tmp_path, monkeypatch):
 
 def test_plugin_commands(window):
     plug = window.plugins._instances["notes"]
-    labels = [l for l, _ in plug.get_commands(window)]
-    assert any("New note" in l for l in labels)
-    assert any("page" in l.lower() for l in labels)
+    labels = [label for label, _ in plug.get_commands(window)]
+    assert any("New note" in label for label in labels)
+    assert any("page" in label.lower() for label in labels)

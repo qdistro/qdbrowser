@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 
-from PyQt6.QtCore import QEvent, QObject, QPoint, Qt
+from PyQt6.QtCore import QEvent, QObject, Qt
 from PyQt6.QtWidgets import QApplication
 
 from qdbrowser.config import Config

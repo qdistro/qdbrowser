@@ -1,7 +1,7 @@
 """Translate plugin: HTTP call shape + extraction flow (mocked)."""
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -106,9 +106,9 @@ def test_call_openai_chat_handles_empty_choices(monkeypatch):
 
 def test_plugin_commands_present(window):
     plug = window.plugins._instances["translate"]
-    labels = [l for l, _ in plug.get_commands(window)]
-    assert any("Translate page" in l for l in labels)
-    assert any("Translate selection" in l for l in labels)
+    labels = [label for label, _ in plug.get_commands(window)]
+    assert any("Translate page" in label for label in labels)
+    assert any("Translate selection" in label for label in labels)
 
 
 def test_shortcut_registered(window):

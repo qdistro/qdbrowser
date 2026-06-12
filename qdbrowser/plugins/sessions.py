@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 
-from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QInputDialog, QMessageBox
 
 from qdbrowser.config import CONFIG_DIR
