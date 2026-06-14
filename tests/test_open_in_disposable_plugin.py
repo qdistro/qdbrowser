@@ -14,7 +14,6 @@ import subprocess
 import types
 
 import pytest
-
 from qdbrowser.plugins import open_in_disposable as mod
 from qdbrowser.plugins.open_in_disposable import (
     URL_PREVIEW_CLASS,
@@ -130,7 +129,12 @@ class _FakeWindow:
         self.notified.append(message)
 
 
-def _plugin_with(monkeypatch, *, sdk=object(), enabled=True):
+# Distinct sentinel stub object shared by callers that don't pass an explicit
+# sdk (module-level singleton avoids a B008 function-call-in-default).
+_DEFAULT_SDK = object()
+
+
+def _plugin_with(monkeypatch, *, sdk=_DEFAULT_SDK, enabled=True):
     monkeypatch.setattr(mod, "_sdk", lambda: sdk)
     monkeypatch.setattr(mod, "class_enabled", lambda *_a, **_k: enabled)
     return OpenInDisposablePlugin()
