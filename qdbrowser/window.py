@@ -209,6 +209,12 @@ class MainWindow(QMainWindow):
             "reader_mode", "mouse_gestures", "web_panels",
             "dark_mode", "picture_in_picture", "tab_list", "translate",
             "quarantine_panel",
+            # Preview an untrusted URL in a throwaway tier-2 disposable
+            # (command palette). Thin consumer of the shipped
+            # open_in_disposable SDK; fail-closed (no command unless the SDK +
+            # preview class are available and the URL is an eligible http(s)
+            # link).
+            "open_in_disposable",
             # track-04 Phase-1: tag clipboard writes with origin URL
             # + tab id so the qdshell ClipboardGate sees them as
             # extra MIME types on selection_set.
