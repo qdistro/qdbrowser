@@ -72,6 +72,22 @@ def current_silo() -> str:
         return ""
 
 
+def profile_silo_segment() -> str:
+    """Return the sanitized ``$QDISTRO_SILO`` tag for use as a *storage*
+    path segment, or ``""`` when no silo is set.
+
+    Unlike :func:`current_silo` this does NOT fall back to the unix
+    username: the persistent-profile isolation boundary is the silo tag the
+    launcher injects. Silos that share ``$HOME`` share a username, so the
+    username cannot distinguish them — only ``$QDISTRO_SILO`` can. Nesting
+    the on-disk profile under a silo only when one is actually set lets plain
+    standalone use keep the legacy flat profile path (no migration). The
+    value is constrained to the silo grammar, so it is always a safe single
+    path component (no ``/`` or ``..`` traversal).
+    """
+    return _sanitize_silo(os.environ.get("QDISTRO_SILO", "").strip())
+
+
 def silo_badge_text(silo: str) -> str:
     """Build the title-bar badge for ``silo``. Empty silo → empty
     string so the caller can pass the result through ``f"{title}{badge}"``

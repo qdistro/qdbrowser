@@ -30,6 +30,9 @@ from PyQt6.QtWebEngineCore import (
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import QApplication, QSizePolicy, QVBoxLayout, QWidget
 
+from .ca_bundle import _safe_profile_name
+from .clipboard_silo import profile_silo_segment
+
 _PROFILES: dict = {}
 
 
@@ -210,17 +213,51 @@ def _alloc_webview_id() -> int:
 
 
 def get_profile(name: str = "default") -> QWebEngineProfile:
-    """Return a singleton named profile. Persistent storage under
-    ``~/.local/share/qdbrowser/profiles/<name>``. Pass ``"private"`` for
-    an off-the-record profile.
+    """Return a singleton named profile. Pass ``"private"`` for an
+    off-the-record profile.
+
+    J8 (cross-silo isolation): a *persistent* profile's on-disk storage is
+    isolated per silo. When ``$QDISTRO_SILO`` is set (the launcher injects it),
+    storage lives under ``~/.local/share/qdbrowser/profiles/<silo>/<name>`` so
+    two silos that share ``$HOME`` do NOT share one cookie jar / cache /
+    localStorage — which would defeat the silo web-identity boundary. With no
+    silo set (plain standalone use) the legacy flat
+    ``~/.local/share/qdbrowser/profiles/<name>`` path is kept, so existing
+    profiles aren't orphaned. The off-the-record ``"private"`` profile has no
+    on-disk storage and is silo-independent by construction.
+
+    The ``name`` component is interpolated into the on-disk path and reaches
+    us from attacker-selectable sources (``--profile``, the agent RPC
+    ``open_tab(profile=...)``, restored layouts). It MUST be a safe single
+    path segment or a crafted name (``../beta/default``) would climb out of
+    the ``<silo>/`` segment into a *sibling* silo's storage — defeating the
+    very boundary this fix creates. We fail closed: reject anything that is
+    not a safe basename (reusing ``ca_bundle._safe_profile_name``) before it
+    reaches either the cache key or the path build.
     """
-    if name in _PROFILES:
-        return _PROFILES[name]
+    if name != "private":
+        safe = _safe_profile_name(name)
+        if safe is None:
+            raise ValueError(f"unsafe qdbrowser profile name: {name!r}")
+        name = safe
+    # The silo segment is part of the cache key so a single interpreter that
+    # somehow saw two silos would not hand back the wrong silo's profile.
+    # Both ``silo_seg`` (silo grammar) and ``name`` (basename check above) are
+    # guaranteed to be single path segments, so the key is unambiguous.
+    silo_seg = "" if name == "private" else profile_silo_segment()
+    cache_key = f"{silo_seg}/{name}" if silo_seg else name
+    if cache_key in _PROFILES:
+        return _PROFILES[cache_key]
     if name == "private":
         prof = QWebEngineProfile()  # off-the-record, no name
     else:
         prof = QWebEngineProfile(name)
-        base = os.path.expanduser(f"~/.local/share/qdbrowser/profiles/{name}")
+        if silo_seg:
+            base = os.path.expanduser(
+                f"~/.local/share/qdbrowser/profiles/{silo_seg}/{name}")
+        else:
+            base = os.path.expanduser(
+                f"~/.local/share/qdbrowser/profiles/{name}")
         os.makedirs(base, exist_ok=True)
         prof.setPersistentStoragePath(os.path.join(base, "storage"))
         prof.setCachePath(os.path.join(base, "cache"))
@@ -230,7 +267,7 @@ def get_profile(name: str = "default") -> QWebEngineProfile:
     # §6: pin the single source-of-truth UA on every profile (default,
     # named, and private) so silos can't be distinguished by UA drift.
     apply_user_agent(prof)
-    _PROFILES[name] = prof
+    _PROFILES[cache_key] = prof
     _notify_profile_created(prof)
     return prof
 
