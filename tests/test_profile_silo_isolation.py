@@ -16,7 +16,6 @@ These tests pin:
 from __future__ import annotations
 
 import pytest
-
 import qdbrowser.webview as wv_mod
 from qdbrowser.clipboard_silo import profile_silo_segment
 from qdbrowser.webview import get_profile
