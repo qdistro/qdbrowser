@@ -50,7 +50,7 @@ def _sanitize_silo(s: str) -> str:
     """
     if not s:
         return ""
-    return s if _VALID_SILO_RE.match(s) else ""
+    return s if _VALID_SILO_RE.fullmatch(s) else ""
 
 
 def current_silo() -> str:

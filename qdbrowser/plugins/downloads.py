@@ -346,6 +346,10 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
         self._wired_profiles: set = set()
         self._history = _load_history()
         self._quarantine: QuarantineStore | None = None
+        # True when quarantine is enabled but its store could not be
+        # opened: downloads are then refused rather than falling through
+        # to a direct ~/Downloads write (iso2 `13` E3).
+        self._quarantine_required = False
 
     def activate(self, window):
         self._window = window
@@ -362,11 +366,17 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
                                     "~/.local/share/qdbrowser/quarantine"))
                 self._quarantine = QuarantineStore(q_dir)
             except Exception as exc:
-                log.warning("quarantine store init failed, downloads go "
-                            "direct to target dir: %s", exc)
+                # Fail closed: quarantine is the claimed containment, so
+                # when it is enabled but cannot be set up, downloads are
+                # refused rather than silently landing in ~/Downloads
+                # (iso2 `13` E3).
+                log.error("quarantine store init failed; downloads are "
+                          "REFUSED until it is fixed: %s", exc)
                 self._quarantine = None
+                self._quarantine_required = True
         else:
             self._quarantine = None
+            self._quarantine_required = False
         # Subscribe to "profile created" so every present and future
         # QWebEngineProfile gets its ``downloadRequested`` signal
         # wired without rebinding ``wv_mod.get_profile``. The webview
@@ -402,6 +412,16 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
         # URL-bearing bridge events. The file is still quarantined and
         # scanned (operational security), just without the origin trail.
         otr = self._request_is_off_the_record(request)
+
+        if self._quarantine_required and qs is None:
+            log.error("download refused: quarantine is enabled but its "
+                      "store failed to initialise")
+            self._cancel_request(request)
+            self._notify_blocked(
+                "Quarantine is unavailable, so this download was blocked.\n"
+                "Downloads stay disabled until the quarantine store can be "
+                "opened again.")
+            return
 
         row_id = None  # set if quarantine intake succeeds
 
@@ -484,8 +504,11 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
                     lambda _r=request, _id=row_id, _qp=q_path:
                         self._quarantine_on_finished(_r, _id, _qp))
             except Exception as exc:
-                log.warning("quarantine redirect failed, falling back to "
-                            "direct download: %s", exc)
+                # Fail closed (iso2 `13` E3): intake errors used to fall
+                # back to a direct ~/Downloads write, removing the claimed
+                # containment exactly when its setup failed.
+                log.error("quarantine redirect failed; download refused: %s",
+                          exc)
                 # Clean up partial quarantine state so we don't leave
                 # orphan DB rows for files that will never arrive.
                 if row_id is not None:
@@ -493,15 +516,11 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
                         qs.update_scan_result(row_id, "intake_failed")
                     except Exception:
                         pass
-                    row_id = None  # mark as not quarantined
-                # Reset the download filename in case setDownloadFileName
-                # was already called with the quarantine basename.
-                try:
-                    if suggested:
-                        request.setDownloadFileName(suggested)
-                except Exception:
-                    pass
-                self._set_direct_download_dir(request)
+                self._cancel_request(request)
+                self._notify_blocked(
+                    "This download was blocked because it could not be "
+                    "placed in quarantine.")
+                return
         else:
             self._set_direct_download_dir(request)
 
@@ -527,8 +546,31 @@ class DownloadsPlugin(SidePanelProvider, CommandProvider):
             self._notify_bridge_started(request)
         request.accept()
 
+    @staticmethod
+    def _cancel_request(request) -> None:
+        try:
+            request.cancel()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not cancel refused download: %s", exc)
+
+    def _notify_blocked(self, message: str) -> None:
+        """Tell the user a download was refused (quarantine unavailable)."""
+        window = self._window
+        if window is None:
+            return
+        try:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(window, "Download blocked", message)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not show download-blocked notice: %s", exc)
+
     def _set_direct_download_dir(self, request: QWebEngineDownloadRequest):
-        """Fallback: write directly to the user's downloads directory.
+        """Write directly to the user's downloads directory.
+
+        Used only when quarantine is *disabled* or the URL host is in
+        ``auto_release_domains`` — never as an error fallback: an intake
+        failure with quarantine enabled cancels the download instead
+        (iso2 `13` E3).
 
         Prefers ``[downloads] release_dir``, falls back to the legacy
         ``[general] downloads_dir`` so existing user configs are honoured.

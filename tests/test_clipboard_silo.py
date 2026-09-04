@@ -15,6 +15,14 @@ class TestCurrentSilo:
         monkeypatch.setenv("QDISTRO_SILO", "work")
         assert cs.current_silo() == "work"
 
+    def test_trailing_newline_rejected(self, monkeypatch):
+        # `re.match` + `$` used to accept "work\n" as a distinct silo
+        # (iso2 `13` E5); fullmatch rejects it.
+        monkeypatch.setenv("QDISTRO_SILO", "work\n")
+        assert cs.current_silo() != "work\n"
+        assert cs._sanitize_silo("work\n") == ""
+        assert cs._sanitize_silo("work") == "work"
+
     def test_no_env_falls_back_to_user(self, monkeypatch):
         monkeypatch.delenv("QDISTRO_SILO", raising=False)
         s = cs.current_silo()

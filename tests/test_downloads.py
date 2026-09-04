@@ -82,6 +82,7 @@ class _Request:
         self._finish_on_accept = finish_on_accept
         self._page = _Page(private)
         self.accepted = False
+        self.cancelled = False
         self.isFinishedChanged = _Signal()
 
     def page(self):
@@ -119,6 +120,9 @@ class _Request:
 
     def mimeType(self):
         return "application/zip"
+
+    def cancel(self):
+        self.cancelled = True
 
     def accept(self):
         self.accepted = True
@@ -387,3 +391,87 @@ def test_normal_autorelease_host_logged(window, tmp_path, caplog):
         assert "example.test" in text
     finally:
         Config().set("downloads", "auto_release_domains", [])
+
+
+# --- iso2 `13` E3: quarantine failures must fail closed -----------------
+
+def test_quarantine_init_failure_blocks_downloads(window, monkeypatch,
+                                                  caplog):
+    """Store init failing with quarantine enabled refuses downloads
+    instead of writing straight to ~/Downloads."""
+    import logging
+
+    from qdbrowser.plugins import downloads as dl_mod
+
+    plug = window.plugins._instances["downloads"]
+    plug._window = _Window(_Bridge())
+    plug._panel = None
+
+    def _boom(*a, **kw):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(dl_mod, "QuarantineStore", _boom)
+    with caplog.at_level(logging.ERROR, logger="qdbrowser.downloads"):
+        plug.activate(_Window(_Bridge()))
+    assert plug._quarantine is None
+    assert plug._quarantine_required is True
+
+    plug._panel = None
+    req = _Request(state=0, finished=False)
+    with caplog.at_level(logging.ERROR, logger="qdbrowser.downloads"):
+        plug._on_download_requested(req)
+    assert req.cancelled is True
+    assert req.accepted is False
+    assert not hasattr(req, "_directory")
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "refused" in text.lower()
+
+
+def test_quarantine_disabled_still_downloads_direct(window, monkeypatch):
+    """quarantine_enabled = false is unchanged: direct download."""
+    from qdbrowser.config import Config
+
+    plug = window.plugins._instances["downloads"]
+    Config().set("downloads", "quarantine_enabled", False)
+    try:
+        plug.activate(_Window(_Bridge()))
+        assert plug._quarantine is None
+        assert plug._quarantine_required is False
+        plug._window = _Window(_Bridge())
+        plug._panel = None
+        req = _Request(state=0, finished=False)
+        plug._on_download_requested(req)
+        assert req.accepted is True
+        assert req.cancelled is False
+        assert getattr(req, "_directory", None)
+    finally:
+        Config().set("downloads", "quarantine_enabled", True)
+
+
+def test_quarantine_redirect_failure_cancels(window, tmp_path, caplog):
+    """A per-request intake error cancels the download and marks the
+    orphan row intake_failed instead of falling back to direct."""
+    import logging
+
+    plug = window.plugins._instances["downloads"]
+    plug._window = _Window(_Bridge())
+    plug._panel = None
+    qs = _fresh_quarantine(plug, tmp_path)
+
+    class _BadSignal(_Signal):
+        def connect(self, callback):
+            raise RuntimeError("intake exploded")
+
+    req = _Request(state=0, finished=False)
+    req.isFinishedChanged = _BadSignal()
+
+    with caplog.at_level(logging.ERROR, logger="qdbrowser.downloads"):
+        plug._on_download_requested(req)
+
+    assert req.cancelled is True
+    assert req.accepted is False
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "refused" in text.lower()
+    # The orphan row is marked, not left pending.
+    rows = qs.list_all()
+    assert rows and rows[0].get("scan_result") == "intake_failed"
