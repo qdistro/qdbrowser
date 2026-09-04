@@ -45,6 +45,18 @@ class AgentControlClient:
         s.connect(self._path)
         self._conn = s
         self._buf = b""
+        self._handshake()
+
+    def _handshake(self):
+        exe = os.readlink(f"/proc/{os.getpid()}/exe")
+        msg = {"op": "handshake", "exe": exe, "pid": os.getpid(), "id": 0}
+        self._conn.sendall((json.dumps(msg) + "\n").encode("utf-8"))
+        line = self._read_line()
+        if not line.strip():
+            return
+        reply = json.loads(line.decode("utf-8"))
+        if reply.get("error"):
+            raise RuntimeError(f"handshake failed: {reply['error']}")
 
     def _read_line(self) -> bytes:
         while b"\n" not in self._buf:

@@ -28,6 +28,16 @@ def _connect_and_call(socket_path, method, qapp, **params):
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
                 s.settimeout(_RPC_TIMEOUT_S)
                 s.connect(socket_path)
+                exe = os.readlink(f"/proc/{os.getpid()}/exe")
+                hs = {"op": "handshake", "exe": exe, "pid": os.getpid(),
+                      "id": 0}
+                s.sendall((json.dumps(hs) + "\n").encode())
+                buf = b""
+                while b"\n" not in buf:
+                    chunk = s.recv(65536)
+                    if not chunk:
+                        break
+                    buf += chunk
                 req = {
                     "jsonrpc": "2.0",
                     "id": 1,

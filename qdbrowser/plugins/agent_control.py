@@ -1013,9 +1013,9 @@ class AgentControlPlugin(Plugin):
         try:
             cfg = Config()
             return bool(cfg.get("agent_control", "require_handshake",
-                                default=False))
+                                default=True))
         except Exception:
-            return False
+            return True
 
     def _handle_handshake(self, client: _Client, req: dict) -> dict:
         """Process a ``{op: "handshake", exe: "...", pid: N}`` frame.
@@ -1060,21 +1060,21 @@ class AgentControlPlugin(Plugin):
     def _policy_check_method(self, method) -> tuple[bool, str]:
         """Return ``(allowed, reason)`` for an RPC method.
 
-        Policy enforcement is **opt-in** for backwards compatibility:
-        set ``[agent_control] policy_enforced = true`` to turn it on.
-        When enforced, ``_DEFAULT_DENIED_METHODS`` are denied; admin can
-        subtract from that set via ``allowed_methods`` and add to it via
+        Policy enforcement is **on by default**. When enforced,
+        ``_DEFAULT_DENIED_METHODS`` are denied; admin can subtract from
+        that set via ``allowed_methods`` and add to it via
         ``denied_methods``. ``allowed`` wins over ``denied`` when a
         method appears in both, so an admin can explicitly re-enable
         e.g. ``eval_js`` for a development host.
 
-        Production deployments should set ``policy_enforced = true``;
-        the secure recipe is in ``todo/browser/03-agent-guardrails.md``.
+        Set ``[agent_control] policy_enforced = false`` only for a
+        local bring-up that needs the historical open socket. The
+        secure recipe is in ``todo/browser/03-agent-guardrails.md``.
         """
         try:
             cfg = Config()
             enforced = bool(cfg.get("agent_control", "policy_enforced",
-                                    default=False))
+                                    default=True))
         except Exception:
             return True, ""
         if not enforced:

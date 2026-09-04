@@ -42,6 +42,7 @@ import time
 
 from PyQt6.QtCore import QByteArray, QMimeData
 from PyQt6.QtGui import QClipboard, QGuiApplication
+from PyQt6.QtWebEngineCore import QWebEngineScript
 
 from qdbrowser.plugin import PageObserver
 
@@ -67,6 +68,10 @@ MIME_CONTEXT_PASSWORD_FIELD = "x-qdistro-context-password-field"
 MIME_CONTEXT_CODE_BLOCK = "x-qdistro-context-code-block"
 MIME_CONTEXT_CONTENT_EDITABLE = "x-qdistro-context-content-editable"
 _MIME_METADATA_PREFIX = "x-qdistro-"
+
+# Isolated world so page JS cannot overwrite window.__qdistro_clipboard_meta.
+# ApplicationWorld shares the DOM with the page but has a separate JS heap.
+_CLIPBOARD_JS_WORLD = QWebEngineScript.ScriptWorldId.ApplicationWorld
 
 # JS snippet injected into every page to capture selection context.
 # The handler fires on `selectionchange` and caches the result in
@@ -267,7 +272,7 @@ class ClipboardOriginPlugin(PageObserver):
             page = webview.view.page() if webview.view else None
             if page is None:
                 return
-            page.runJavaScript(_SELECTIONCHANGE_JS)
+            page.runJavaScript(_SELECTIONCHANGE_JS, _CLIPBOARD_JS_WORLD)
         except Exception as exc:
             log.debug("clipboard: JS injection failed: %s", exc)
 
@@ -282,6 +287,7 @@ class ClipboardOriginPlugin(PageObserver):
                 return
             page.runJavaScript(
                 "window.__qdistro_clipboard_meta",
+                _CLIPBOARD_JS_WORLD,
                 callback,
             )
         except Exception:

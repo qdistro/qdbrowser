@@ -29,7 +29,10 @@ class _StubClient:
         self.pid = pid
         self.exe_path = exe_path
         self.exe_digest = exe_digest
-        self.handshake_done = False
+        # Default True so tests of other layers are not blocked by the
+        # production require_handshake=True default. Handshake tests
+        # pass handshake_done=False explicitly.
+        self.handshake_done = True
         self.handshake_exe = None
         self.handshake_pid = None
         self.attached_tabs = set()
@@ -258,16 +261,15 @@ def test_hostname_match_any():
     assert _hostname_match_any("evil.example.com", patterns) is False
 
 
-def test_policy_off_by_default(fresh_config):
-    """policy_enforced defaults to False, so even the dangerous methods
-    pass the check. This preserves existing agent_control deployments
-    until admin opts in."""
+def test_policy_on_by_default(fresh_config):
+    """policy_enforced defaults to True, so the dangerous methods are
+    denied until the admin re-enables them via allowed_methods."""
     from qdbrowser.plugins.agent_control import AgentControlPlugin
     plug = AgentControlPlugin()
     for m in ("eval_js", "type_text", "send_keys", "click_at",
               "dblclick_at", "move_mouse"):
         allowed, _ = plug._policy_check_method(m)
-        assert allowed is True, f"{m} should be allowed when policy off"
+        assert allowed is False, f"{m} should be denied when policy on"
 
 
 def test_policy_check_method_deny_when_enforced(fresh_config):
@@ -903,6 +905,7 @@ def test_require_handshake_blocks_rpc(fresh_config):
     plug = AgentControlPlugin()
     server = _AgentServer(plug, window=None)
     client = _StubClient()
+    client.handshake_done = False
     req = {
         "jsonrpc": "2.0", "id": 1,
         "method": "list_tabs",
@@ -941,22 +944,22 @@ def test_require_handshake_allows_after_handshake(fresh_config):
         assert resp["error"]["code"] != -32007
 
 
-def test_handshake_not_required_by_default(fresh_config):
-    """Without require_handshake config, RPCs work without handshake."""
+def test_handshake_required_by_default(fresh_config):
+    """require_handshake defaults to True, so RPCs without handshake fail."""
     from qdbrowser.plugins.agent_control import AgentControlPlugin, _AgentServer
 
     plug = AgentControlPlugin()
     server = _AgentServer(plug, window=None)
     client = _StubClient()
+    client.handshake_done = False
     req = {
         "jsonrpc": "2.0", "id": 1,
         "method": "list_tabs",
         "params": {},
     }
     resp = server.handle(client, req)
-    # Should not get handshake_required error.
-    if "error" in resp:
-        assert resp["error"]["code"] != -32007
+    assert "error" in resp
+    assert resp["error"]["code"] == -32007
 
 
 # ===================================================================
@@ -985,8 +988,8 @@ def test_sighup_reloads_config(fresh_config, monkeypatch):
     # Manually install the handler (normally done by activate()).
     plug._install_sighup_handler()
 
-    # Initially policy is off.
-    assert plug._policy_check_method("eval_js")[0] is True
+    # Initially policy is on (guardrail default).
+    assert plug._policy_check_method("eval_js")[0] is False
 
     # Change config in memory.
     Config().set("agent_control", "policy_enforced", True)
@@ -1011,11 +1014,11 @@ def test_sighup_reloads_config(fresh_config, monkeypatch):
     plug._check_sighup_pending()
 
     # After processing, the config singleton was reset. Re-reading
-    # should pick up defaults (policy_enforced=False).
+    # should pick up defaults (policy_enforced=True).
     cfg = Config()
-    enforced = cfg.get("agent_control", "policy_enforced", default=False)
+    enforced = cfg.get("agent_control", "policy_enforced", default=True)
     # The config file doesn't exist, so defaults apply.
-    assert enforced is False
+    assert enforced is True
 
 
 # ===================================================================

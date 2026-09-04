@@ -9,7 +9,11 @@ setup_file() {
 }
 
 @test "qdbrowser launches with agent_control" {
-    vm_run "pkill -f qdbrowser || true"
+    vm_run "pkill -f '^python3 -m qdbrowser' || true"
+    # Smoke exercises click_at/type_text; production defaults deny those
+    # until allowed_methods lists them. Handshake is sent by the scenario
+    # client.
+    vm_run "mkdir -p \$HOME/.config/qdbrowser && printf '%s\\n' '[agent_control]' 'allowed_methods = [\"click_at\", \"type_text\"]' > \$HOME/.config/qdbrowser/config.toml"
     vm_run "QDBROWSER_AGENT_CONTROL=1 setsid -f python3 -m qdbrowser >/tmp/qdb.log 2>&1 < /dev/null"
     sleep 3
     vm_run "test -S /run/user/\$(id -u)/qdbrowser-agent-\$(id -u).sock"
@@ -107,5 +111,5 @@ setup_file() {
 }
 
 teardown_file() {
-    vm_run "pkill -f qdbrowser || true"
+    vm_run "pkill -f '^python3 -m qdbrowser' || true"
 }

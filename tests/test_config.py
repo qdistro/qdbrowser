@@ -10,6 +10,19 @@ def test_defaults(fresh_config):
     assert cfg.get("keybindings", "command_palette") == "Ctrl+E"
 
 
+def test_agent_control_guardrail_defaults(fresh_config):
+    """iso2 13 E4: once the agent socket is on, guardrails are on too."""
+    cfg = fresh_config.Config()
+    assert cfg.get("agent_control", "policy_enforced") is True
+    assert cfg.get("agent_control", "eval_rate_limit_per_minute") == 3
+    assert cfg.get("agent_control", "require_handshake") is True
+    # Broker mediation stays off: the bundled client is D-Bus
+    # org.qdistro.BrowserBridge / QdBrowser1, not the JSON-RPC socket,
+    # and CheckAgentAction would fail-closed without a broker.
+    assert cfg.get("agent_control", "broker_enabled") is False
+    assert cfg.get("agent_control", "allowed_client_exes") == []
+
+
 def test_set_get_roundtrip(fresh_config):
     cfg = fresh_config.Config()
     cfg.set("general", "homepage", "https://example.com")

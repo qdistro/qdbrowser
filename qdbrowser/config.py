@@ -217,11 +217,11 @@ DEFAULTS = {
         "auto_release_domains": [],
     },
     "agent_control": {
-        # Master switch for method-allowlist enforcement. Off by default
-        # so existing deployments don't suddenly start denying methods.
-        # Production should set this to ``true``; see the secure recipe
-        # in todo/browser/03-agent-guardrails.md.
-        "policy_enforced": False,
+        # Master switch for method-allowlist enforcement. On by default:
+        # enabling the agent socket must not also enable eval_js / type_text
+        # / click_at. Admins re-enable verbs via ``allowed_methods``. See
+        # the secure recipe in todo/browser/03-agent-guardrails.md.
+        "policy_enforced": True,
         # Methods explicitly re-enabled by the admin. Takes precedence
         # over the built-in default-deny set (eval_js, type_text,
         # send_keys, click_at, dblclick_at, move_mouse) and over the
@@ -247,7 +247,7 @@ DEFAULTS = {
         # 3 eval_js/min, 10 open_tab/min.
         "rate_limit_per_minute": 600,
         "screenshot_rate_limit_per_minute": 5,
-        "eval_rate_limit_per_minute": 0,
+        "eval_rate_limit_per_minute": 3,
         "open_tab_rate_limit_per_minute": 10,
         # ---- Layer 5: broker mediation ----
         # When enabled, calls to ``_DEFAULT_DENIED_METHODS`` (or any
@@ -271,12 +271,13 @@ DEFAULTS = {
         # ``/proc/<pid>/exe`` digest is not in the resolved set with
         # ``client_not_allowed``.
         "allowed_client_exes": [],
-        # When true, clients must complete a handshake (``{op:
-        # "handshake", exe: "...", pid: N}``) before any JSON-RPC calls.
-        # The handshake is audit-only: it logs the client's claimed
+        # Clients must complete a handshake (``{op: "handshake",
+        # exe: "...", pid: N}``) before any JSON-RPC calls. The
+        # handshake is audit-only: it logs the client's claimed
         # identity and verifies /proc/<pid>/exe, but a TOCTOU racer
-        # can defeat the check. Off by default.
-        "require_handshake": False,
+        # can defeat the check. On by default so a same-UID peer
+        # cannot skip identification.
+        "require_handshake": True,
     },
 }
 

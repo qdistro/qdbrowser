@@ -31,6 +31,55 @@ class _ThreadedConn:
         self._sock.settimeout(self._timeout_s)
         self._sock.connect(self._path)
 
+    def handshake(self):
+        exe = os.readlink(f"/proc/{os.getpid()}/exe")
+        return self.call_raw({"op": "handshake", "exe": exe,
+                              "pid": os.getpid(), "id": 0})
+
+    def call_raw(self, req):
+        with self._lock:
+            rid = req.get("id", 0)
+            out_q: queue.Queue = queue.Queue()
+
+            def _worker():
+                try:
+                    self._sock.sendall((json.dumps(req) + "\n").encode())
+                    buf = b""
+                    while True:
+                        while b"\n" not in buf:
+                            chunk = self._sock.recv(65536)
+                            if not chunk:
+                                out_q.put(("error", "agent_control closed"))
+                                return
+                            buf += chunk
+                        line, _, rest = buf.partition(b"\n")
+                        buf = rest
+                        if not line.strip():
+                            continue
+                        msg = json.loads(line.decode())
+                        if msg.get("id") != rid:
+                            continue
+                        out_q.put(("ok", msg))
+                        return
+                except Exception:
+                    out_q.put(("error", traceback.format_exc()))
+
+            t = threading.Thread(target=_worker, daemon=True)
+            t.start()
+            deadline = time.monotonic() + self._timeout_s
+            while time.monotonic() < deadline:
+                try:
+                    kind, payload = out_q.get_nowait()
+                except queue.Empty:
+                    kind = payload = None
+                if kind == "ok":
+                    return payload
+                if kind == "error":
+                    raise RuntimeError(f"handshake/raw call failed: {payload}")
+                self._qapp.processEvents()
+                time.sleep(0.01)
+            raise RuntimeError("handshake/raw call timed out")
+
     def call(self, method, **params):
         with self._lock:
             rid = self._next_id
@@ -113,6 +162,7 @@ def conn(agent_window, qapp):
     _w, sock_path = agent_window
     c = _ThreadedConn(sock_path, qapp)
     c.connect()
+    c.handshake()
     yield c
     c.close()
 

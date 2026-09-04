@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 from PyQt6.QtCore import QByteArray, QMimeData
 from PyQt6.QtGui import QGuiApplication
 from qdbrowser.plugins.clipboard import (
+    _CLIPBOARD_JS_WORLD,
     _SELECTIONCHANGE_JS,
     MIME_CONTEXT_CODE_BLOCK,
     MIME_CONTEXT_CONTENT_EDITABLE,
@@ -129,7 +130,8 @@ class TestJSInjection:
         plug = ClipboardOriginPlugin()
         wv = _make_mock_webview()
         plug._inject_selectionchange_handler(wv)
-        wv.view.page().runJavaScript.assert_called_once_with(_SELECTIONCHANGE_JS)
+        wv.view.page().runJavaScript.assert_called_once_with(
+            _SELECTIONCHANGE_JS, _CLIPBOARD_JS_WORLD)
 
     def test_inject_selectionchange_handler_none_page_no_crash(self):
         plug = ClipboardOriginPlugin()
@@ -208,6 +210,22 @@ class TestDomMetaCaching:
         wv.view.page().runJavaScript.assert_called_once()
         args = wv.view.page().runJavaScript.call_args[0]
         assert args[0] == "window.__qdistro_clipboard_meta"
+        assert args[1] == _CLIPBOARD_JS_WORLD
+
+    def test_inject_and_read_use_isolated_world(self):
+        """Page JS must not be able to overwrite the password-field tag:
+        inject and read both run in ApplicationWorld, not MainWorld."""
+        from PyQt6.QtWebEngineCore import QWebEngineScript
+        assert _CLIPBOARD_JS_WORLD == (
+            QWebEngineScript.ScriptWorldId.ApplicationWorld)
+        assert _CLIPBOARD_JS_WORLD != (
+            QWebEngineScript.ScriptWorldId.MainWorld)
+        plug = ClipboardOriginPlugin()
+        wv = _make_mock_webview()
+        plug._inject_selectionchange_handler(wv)
+        plug._on_selection_changed(id(wv), wv)
+        for call in wv.view.page().runJavaScript.call_args_list:
+            assert call[0][1] == _CLIPBOARD_JS_WORLD
 
     def test_read_dom_meta_invokes_callback_on_none_page(self):
         plug = ClipboardOriginPlugin()

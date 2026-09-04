@@ -32,12 +32,33 @@ class Client:
                 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 s.connect(self._path)
                 self._conn = s
+                self._handshake()
                 return
             except OSError as e:
                 last_err = e
                 time.sleep(delay)
         raise RuntimeError(
             f"could not connect to {self._path}: {last_err}")
+
+    def _handshake(self):
+        exe = os.readlink(f"/proc/{os.getpid()}/exe")
+        msg = {"op": "handshake", "exe": exe, "pid": os.getpid(), "id": 0}
+        self._conn.sendall((json.dumps(msg) + "\n").encode("utf-8"))
+        while True:
+            while b"\n" not in self._buf:
+                chunk = self._conn.recv(65536)
+                if not chunk:
+                    raise RuntimeError("agent_control closed during handshake")
+                self._buf += chunk
+            line, _, rest = self._buf.partition(b"\n")
+            self._buf = rest
+            if not line.strip():
+                continue
+            reply = json.loads(line.decode("utf-8"))
+            if reply.get("error"):
+                raise RuntimeError(
+                    f"handshake failed: {reply['error']}")
+            return
 
     def call(self, method: str, **params) -> Any:
         if self._conn is None:
