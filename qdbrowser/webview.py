@@ -15,6 +15,7 @@ simple; persistent profiles (cookies, cache, history) attach via
 
 from __future__ import annotations
 
+import logging
 import os
 
 from PyQt6.QtCore import (
@@ -32,6 +33,8 @@ from PyQt6.QtWidgets import QApplication, QSizePolicy, QVBoxLayout, QWidget
 
 from .ca_bundle import _safe_profile_name
 from .clipboard_silo import profile_silo_segment
+
+log = logging.getLogger("qdbrowser.webview")
 
 _PROFILES: dict = {}
 
@@ -344,6 +347,16 @@ class WebView(QWidget):
 
         self.view = QWebEngineView(self)
         page = QWebEnginePage(self._profile, self.view)
+        # Error-path cert-pin hook. ``certificateError`` is a page-level
+        # signal (never on the profile), so it must be connected here,
+        # on every page, including the off-the-record "private" profile
+        # (iso2 `13` E2). This only hard-rejects a pinned host whose
+        # chain Chromium already refused; see cert_policy's docstring.
+        try:
+            from .cert_policy import install_cert_policy_on_page
+            install_cert_policy_on_page(page)
+        except Exception as exc:  # noqa: BLE001
+            log.error("cert policy page wiring failed: %s", exc)
         try:
             page.setUrlRequestInterceptor(self._interceptor)
         except AttributeError:

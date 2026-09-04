@@ -1,7 +1,10 @@
-"""Cert-pinning policy: SPKI hashing, PinStore, evaluate, loader.
+"""Cert-pin store: SPKI hashing, PinStore, evaluate, loader, error hook.
 
-These tests are pure-Python — they do not spin up a QWebEngineProfile.
-The Qt side (``install_cert_policy``) is exercised by integration tests.
+Most tests are pure-Python. The hook tests (``TestErrorPathHook``) use
+fake page/error objects so they assert the decision table without
+Chromium; ``TestRuntimeProbe`` checks the real PyQt6 API shape (skipped
+when PyQt6 is unavailable). No integration scenario exercises the hook
+end to end yet — see iso2 `13` E2.
 """
 
 import base64
@@ -279,3 +282,252 @@ def test_load_pin_store_dev_override_under_home(tmp_path, monkeypatch):
 
     store = load_pin_store(user_path=derived)
     assert store.pins_for("dev.example.com") == ["sha256/devpin"]
+
+
+# ---------------------------------------------------------------------------
+# Error-path hook (iso2 `13` E2). The signal lives on QWebEnginePage, never
+# on QWebEngineProfile; these fakes model exactly that.
+# ---------------------------------------------------------------------------
+
+
+class _FakeSignal:
+    def __init__(self):
+        self.slots = []
+
+    def connect(self, slot):
+        self.slots.append(slot)
+
+    def emit(self, *args):
+        for slot in self.slots:
+            slot(*args)
+
+
+class _FakePage:
+    def __init__(self):
+        self.certificateError = _FakeSignal()
+
+
+class _FakeProfile:
+    """No ``certificateError`` — true of every Qt release."""
+
+    def storageName(self):
+        return "fake"
+
+
+class _FakeCert:
+    def __init__(self, der):
+        self._der = der
+
+    def toDer(self):
+        return self._der
+
+
+class _FakeUrl:
+    def __init__(self, host):
+        self._host = host
+
+    def host(self):
+        return self._host
+
+
+class _FakeError:
+    def __init__(self, host, ders, reject_raises=False):
+        self._url = _FakeUrl(host)
+        self._chain = [_FakeCert(d) for d in ders]
+        self.accepted = 0
+        self.rejected = 0
+        self._reject_raises = reject_raises
+
+    def url(self):
+        return self._url
+
+    def certificateChain(self):
+        return list(self._chain)
+
+    def acceptCertificate(self):
+        self.accepted += 1
+
+    def rejectCertificate(self):
+        if self._reject_raises:
+            raise RuntimeError("boom")
+        self.rejected += 1
+
+
+@pytest.fixture(autouse=True)
+def _reset_active_store():
+    from qdbrowser import cert_policy
+    # getattr: keeps the pre-existing pure-Python tests runnable against a
+    # tree that predates the page hook, so only the hook tests fail there.
+    reset = getattr(cert_policy, "set_active_pin_store", lambda _s: None)
+    reset(None)
+    yield
+    reset(None)
+
+
+class TestErrorPathHook:
+    def test_profile_install_registers_store_but_wires_nothing(self, caplog):
+        """The old code read ``profile.certificateError`` and silently
+        returned. The profile has no such signal; the store must still be
+        registered for the page hook."""
+        import logging
+
+        from qdbrowser.cert_policy import (
+            PinStore, active_pin_store, install_cert_policy,
+        )
+        store = PinStore(pins={"bank.example.com": ["sha256/x"]})
+        with caplog.at_level(logging.INFO, logger="qdbrowser.cert"):
+            install_cert_policy(_FakeProfile(), store)
+        assert active_pin_store() is store
+        assert any("page-level" in r.message for r in caplog.records)
+
+    def test_page_hook_is_connected_on_the_page(self):
+        from qdbrowser.cert_policy import PinStore, install_cert_policy_on_page
+        page = _FakePage()
+        install_cert_policy_on_page(page, PinStore())
+        assert len(page.certificateError.slots) == 1
+
+    def test_pinned_mismatch_rejects_and_never_accepts(self, cert_fixture,
+                                                        caplog):
+        import logging
+
+        from qdbrowser.cert_policy import PinStore, install_cert_policy_on_page
+        der, _real_pin = cert_fixture
+        store = PinStore(pins={"bank.example.com": ["sha256/notthisone"]})
+        page = _FakePage()
+        install_cert_policy_on_page(page, store)
+        err = _FakeError("bank.example.com", [der])
+        with caplog.at_level(logging.WARNING, logger="qdbrowser.cert"):
+            page.certificateError.emit(err)
+        assert err.rejected == 1
+        assert err.accepted == 0
+        assert any("qdbrowser.cert reject host=bank.example.com" in r.message
+                   for r in caplog.records)
+
+    def test_pinned_no_certs_rejects(self):
+        from qdbrowser.cert_policy import PinStore, install_cert_policy_on_page
+        store = PinStore(pins={"bank.example.com": ["sha256/x"]})
+        page = _FakePage()
+        install_cert_policy_on_page(page, store)
+        err = _FakeError("bank.example.com", [])
+        page.certificateError.emit(err)
+        assert (err.rejected, err.accepted) == (1, 0)
+
+    def test_reject_failure_logs_error_and_does_not_accept(self, cert_fixture,
+                                                            caplog):
+        """Old code: ``except Exception: pass``. Now: ERROR log, no accept."""
+        import logging
+
+        from qdbrowser.cert_policy import PinStore, install_cert_policy_on_page
+        der, _ = cert_fixture
+        store = PinStore(pins={"bank.example.com": ["sha256/notthisone"]})
+        page = _FakePage()
+        install_cert_policy_on_page(page, store)
+        err = _FakeError("bank.example.com", [der], reject_raises=True)
+        with caplog.at_level(logging.ERROR, logger="qdbrowser.cert"):
+            page.certificateError.emit(err)
+        assert err.accepted == 0
+        assert any(r.levelno == logging.ERROR
+                   and "rejectCertificate failed" in r.message
+                   for r in caplog.records)
+
+    def test_pinned_match_is_left_to_qt_default(self, cert_fixture):
+        """A matching pin does not mean accept: qdbrowser never calls
+        acceptCertificate; Qt 6 rejects the unanswered error."""
+        from qdbrowser.cert_policy import PinStore, install_cert_policy_on_page
+        der, pin = cert_fixture
+        store = PinStore(pins={"bank.example.com": [pin]})
+        page = _FakePage()
+        install_cert_policy_on_page(page, store)
+        err = _FakeError("bank.example.com", [der])
+        page.certificateError.emit(err)
+        assert (err.rejected, err.accepted) == (0, 0)
+
+    def test_unpinned_host_is_left_unanswered(self, cert_fixture):
+        from qdbrowser.cert_policy import PinStore, install_cert_policy_on_page
+        der, _ = cert_fixture
+        store = PinStore(pins={"bank.example.com": ["sha256/x"]})
+        page = _FakePage()
+        install_cert_policy_on_page(page, store)
+        err = _FakeError("other.example.com", [der])
+        page.certificateError.emit(err)
+        assert (err.rejected, err.accepted) == (0, 0)
+
+    def test_page_wired_before_store_uses_active_store(self, cert_fixture):
+        """Pages built before the window loaded pins resolve the store at
+        error time."""
+        from qdbrowser.cert_policy import (
+            PinStore, install_cert_policy, install_cert_policy_on_page,
+        )
+        der, _ = cert_fixture
+        page = _FakePage()
+        install_cert_policy_on_page(page)          # store=None
+        err0 = _FakeError("bank.example.com", [der])
+        page.certificateError.emit(err0)
+        assert (err0.rejected, err0.accepted) == (0, 0)   # no store yet
+        install_cert_policy(_FakeProfile(),
+                            PinStore(pins={"bank.example.com": ["sha256/x"]}))
+        err1 = _FakeError("bank.example.com", [der])
+        page.certificateError.emit(err1)
+        assert (err1.rejected, err1.accepted) == (1, 0)
+
+    def test_page_without_signal_logs_error(self, caplog):
+        import logging
+
+        from qdbrowser.cert_policy import PinStore, install_cert_policy_on_page
+        with caplog.at_level(logging.ERROR, logger="qdbrowser.cert"):
+            install_cert_policy_on_page(object(), PinStore())
+        assert any("NOT installed" in r.message for r in caplog.records)
+
+
+class TestRuntimeProbe:
+    """The code relies on ``certificateError`` being a page signal. Pin the
+    real API shape so a Qt that moves it fails loudly here."""
+
+    def test_signal_is_on_page_not_profile(self):
+        core = pytest.importorskip("PyQt6.QtWebEngineCore")
+        assert hasattr(core.QWebEnginePage, "certificateError")
+        assert not hasattr(core.QWebEngineProfile, "certificateError")
+
+    def test_no_success_path_certificate_api(self):
+        """Documents the E2 architectural gap: nothing in QtWebEngine
+        exposes the peer chain outside the error object."""
+        core = pytest.importorskip("PyQt6.QtWebEngineCore")
+        assert hasattr(core.QWebEngineCertificateError, "certificateChain")
+        for cls in (core.QWebEngineUrlRequestInfo, core.QWebEngineLoadingInfo,
+                    core.QWebEngineProfile):
+            assert not [n for n in dir(cls)
+                        if "certificatechain" in n.lower()
+                        or "peercertificate" in n.lower()], cls
+
+    def test_real_page_gets_hook(self, qapp, caplog):
+        import logging
+
+        core = pytest.importorskip("PyQt6.QtWebEngineCore")
+        from qdbrowser.cert_policy import PinStore, install_cert_policy_on_page
+        prof = core.QWebEngineProfile()          # off-the-record
+        page = core.QWebEnginePage(prof)
+        try:
+            with caplog.at_level(logging.ERROR, logger="qdbrowser.cert"):
+                install_cert_policy_on_page(page, PinStore())
+            assert not caplog.records
+        finally:
+            page.deleteLater()
+            prof.deleteLater()
+            qapp.processEvents()
+
+    @pytest.mark.parametrize("profile_name", ["default", "private"])
+    def test_webview_wires_every_page(self, qapp, monkeypatch, profile_name):
+        """Every page WebView creates — persistent or off-the-record —
+        passes through install_cert_policy_on_page."""
+        pytest.importorskip("PyQt6.QtWebEngineWidgets")
+        from qdbrowser import cert_policy
+        from qdbrowser.webview import WebView
+        seen = []
+        monkeypatch.setattr(cert_policy, "install_cert_policy_on_page",
+                            lambda page, store=None: seen.append(page))
+        wv = WebView(profile_name=profile_name)
+        try:
+            assert seen == [wv.view.page()]
+        finally:
+            wv.deleteLater()
+            qapp.processEvents()

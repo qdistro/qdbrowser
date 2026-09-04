@@ -1,36 +1,69 @@
-"""Certificate pinning policy for qdbrowser.
+"""Certificate pin *store* for qdbrowser, plus an error-path hook.
 
-The cert policy loads two on-disk admin files:
+WHAT THIS MODULE DOES (read this before calling anything "pinning"):
 
-  - ``/etc/qdistro/cert-pins.json`` — system-wide HPKP-style pin map
-    ``{"hostname": ["sha256/<b64-spki>", ...]}``. A pinned host whose
-    leaf-cert SPKI doesn't match any listed pin is rejected.
-  - ``/etc/qdistro/cert-overrides.json`` — break-glass override file
-    listing hostnames that bypass pinning entirely (``["host1", ...]``).
+  - Loads an admin pin map and evaluates a DER chain against it
+    (``PinStore.evaluate``). That evaluation is real and unit-tested.
+  - Hooks ``QWebEnginePage.certificateError`` on every page the browser
+    creates (``install_cert_policy_on_page``, called from
+    ``webview.WebView.__init__``). When Chromium has ALREADY rejected a
+    chain for a pinned host and the chain does not carry a pinned SPKI,
+    the hook calls ``rejectCertificate()`` so the load is hard-denied
+    and the journal records it.
 
-A user-scope override file at
-``~/.config/qdbrowser/cert-pins.json`` is merged on top of the system
-file (entries override). This lets a dev iterate on pins without
-needing root.
+WHAT IT DOES NOT DO — KNOWN LIMITATION (iso2 `13` E2):
 
-The on-disk format mirrors Chromium's HPKP wire format:
+  ``certificateError`` fires only for chains the system trust store has
+  already refused. A pinned host presenting a CA-valid certificate with
+  the *wrong* key (public MITM CA, enterprise TLS interception, a
+  mis-issued cert) never raises the signal, so ``PinStore.evaluate`` is
+  never consulted and the connection succeeds. QtWebEngine 6.x exposes
+  the peer chain ONLY via ``QWebEngineCertificateError`` (error path);
+  ``QWebEngineUrlRequestInterceptor``/``QWebEngineUrlRequestInfo``,
+  ``QWebEngineLoadingInfo`` and ``QWebEngineProfile`` carry no
+  certificate. Until an API exposes the chain on successful handshakes
+  this is NOT HPKP / SPKI pinning and must not be described as such.
+  Tracked in qdistro ``todo/iso2/13-qdbrowser.md`` E2.
 
-    sha256/<base64(SHA256(SubjectPublicKeyInfo DER))>
+Historical defect: this module used to connect the signal on a
+``QWebEngineProfile``. No Qt release has ever had
+``QWebEngineProfile.certificateError`` (it is a ``QWebEnginePage``
+signal), so the hook was never installed at all. ``install_cert_policy``
+now only registers the active store; pages are wired individually.
 
-This module exports:
+Qt 6 decision semantics (verified against qtwebengine 6.11
+``WebContentsDelegateQt::allowCertificateError``): after the signal
+returns, an error that was neither ``acceptCertificate()``-ed,
+``rejectCertificate()``-ed nor ``defer()``-ed is rejected. There is no
+built-in override UI in QWebEnginePage/QWebEngineView. So a certificate
+error on ANY host — pinned or not — aborts the load unless some handler
+explicitly accepts it; qdbrowser never calls ``acceptCertificate()``.
 
-  - ``load_pin_store(...)`` — returns a ``PinStore`` instance.
-  - ``PinStore.is_overridden(host)`` — True if host is in the override
-    list (skip pinning entirely).
-  - ``PinStore.pins_for(host)`` — list of pin strings or [].
-  - ``PinStore.evaluate(host, der_certs)`` — decision for a chain.
-  - ``install_cert_policy(profile, store)`` — wires the
-    ``selectClientCertificate`` / ``certificateError`` signal on a
-    ``QWebEngineProfile``.
+On-disk files (both optional; a missing file means an empty map):
 
-The journal is the load-bearing assertion surface: every reject lands
-as ``qdbrowser.cert pin_violation host=<h> reason=<r>``.
+  - ``/etc/qdistro/cert-pins.json`` — ``{"hostname": ["sha256/<b64-spki>",
+    ...]}``; the pin string format is Chromium's HPKP wire format,
+    ``sha256/<base64(SHA256(SubjectPublicKeyInfo DER))>``.
+  - ``/etc/qdistro/cert-overrides.json`` — break-glass list of hostnames
+    that skip pin evaluation entirely (``["host1", ...]``).
+  - ``~/.config/qdbrowser/cert-pins.json`` — user-scope entries merged on
+    top of the system file (per-host override), for dev iteration.
+
+Exports:
+
+  - ``load_pin_store(...)`` — returns a ``PinStore``.
+  - ``PinStore.is_overridden`` / ``pins_for`` / ``is_pinned`` /
+    ``evaluate(host, der_certs)``.
+  - ``install_cert_policy(profile, store)`` — registers ``store`` as the
+    active store (profile-level bookkeeping only; see above).
+  - ``install_cert_policy_on_page(page, store=None)`` — connects the
+    error-path hook on one ``QWebEnginePage``.
+
+Journal lines (logger ``qdbrowser.cert``): every evaluation miss logs
+``qdbrowser.cert pin_violation host=<h> reason=<r>``; every hard reject
+logs ``qdbrowser.cert reject host=<h> reason=<r>``.
 """
+
 
 from __future__ import annotations
 
@@ -262,56 +295,127 @@ def _load_json_dict(path: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def install_cert_policy(profile, store: PinStore) -> None:
-    """Wire ``certificateError`` on a ``QWebEngineProfile`` so a pinned
-    host's certificate error is logged and rejected.
+# The store the page-level hook consults. Set by the window once pins are
+# loaded; a page created before that is still covered because the handler
+# resolves the store when the error fires.
+_ACTIVE_STORE: PinStore | None = None
 
-    QtWebEngine's certificate pipeline doesn't expose the full chain to
-    the URL interceptor, so we attach to ``certificateError`` (raised
-    when the system store already failed) and additionally inspect the
-    chain via ``QWebEngineCertificateError.certificateChain()`` if it's
-    available in this Qt version. If a pinned host hits a cert error,
-    we never let the user override — pin violations are hard rejects.
+
+def set_active_pin_store(store: PinStore | None) -> None:
+    global _ACTIVE_STORE
+    _ACTIVE_STORE = store
+
+
+def active_pin_store() -> PinStore | None:
+    return _ACTIVE_STORE
+
+
+def install_cert_policy(profile, store: PinStore) -> None:
+    """Register ``store`` as the active pin store. Profile-level only.
+
+    ``certificateError`` is a ``QWebEnginePage`` signal; no Qt release has
+    ever exposed it on ``QWebEngineProfile`` (iso2 `13` E2). This function
+    therefore does not connect anything on ``profile``. The per-page hook
+    is installed by :func:`install_cert_policy_on_page` from
+    ``webview.WebView.__init__``; the profile argument is kept so the
+    window can call this from its profile-created listener and so a
+    future Qt that does add a profile-level signal gets wired too.
+
+    Scope reminder: even the page hook only runs on the certificate
+    *error* path. It cannot see a CA-valid wrong-key certificate. See the
+    module docstring.
     """
-    try:
-        signal = profile.certificateError  # PyQt6 6.5+
-    except AttributeError:
-        log.info("profile %s has no certificateError signal; "
-                 "cert pinning relies on system store only",
+    set_active_pin_store(store)
+    signal = getattr(profile, "certificateError", None)
+    if signal is None:
+        log.info("profile %s: no certificateError signal (expected; the "
+                 "signal is page-level and pages are wired individually)",
                  getattr(profile, "storageName", lambda: "?")())
         return
+    _connect_cert_error(signal, store, "profile")
 
+
+def install_cert_policy_on_page(page, store: PinStore | None = None) -> None:
+    """Connect the error-path pin hook on one ``QWebEnginePage``.
+
+    Must be called for every page the browser creates (there is exactly
+    one creation site, ``webview.WebView.__init__``; qdbrowser does not
+    override ``createWindow``, so Qt's default returns no page for
+    popups and they are blocked rather than created unwired).
+
+    With ``store=None`` the handler looks up the active store when the
+    error fires, so pages built before ``install_cert_policy`` ran are
+    still covered.
+    """
+    signal = getattr(page, "certificateError", None)
+    if signal is None:
+        log.error("page %r has no certificateError signal; the error-path "
+                  "pin hook is NOT installed (Qt rejects unanswered "
+                  "certificate errors, but pin violations will not be "
+                  "journaled)", page)
+        return
+    _connect_cert_error(signal, store, "page")
+
+
+def _connect_cert_error(signal, store: PinStore | None, what: str) -> None:
+    """Connect ``_on_error`` to ``signal``.
+
+    Decision table (Qt 6: an unanswered, undeferred error is rejected by
+    QtWebEngine itself; qdbrowser never calls ``acceptCertificate``):
+
+      no active store            -> leave unanswered (Qt rejects)
+      host overridden            -> leave unanswered (Qt rejects)
+      host not pinned            -> leave unanswered (Qt rejects)
+      pinned, chain matches pin  -> leave unanswered (Qt rejects)
+      pinned, mismatch/no certs  -> explicit rejectCertificate() + journal
+
+    The explicit reject on the pinned path is what makes the decision
+    ours rather than Qt's default, and it is the line the journal
+    assertion keys on. If ``rejectCertificate()`` itself raises we log at
+    ERROR and return without accepting; the request then falls to Qt's
+    reject-by-default.
+    """
     def _on_error(error):
+        st = store if store is not None else _ACTIVE_STORE
         try:
             host = error.url().host()
         except Exception:
             host = ""
-        decision = None
-        chain = []
+        if st is None:
+            log.info("qdbrowser.cert default-handling host=%s (no pin store)",
+                     host)
+            return
+        chain: list = []
         if hasattr(error, "certificateChain"):
             try:
                 chain = [bytes(c.toDer())
                          for c in error.certificateChain()
                          if hasattr(c, "toDer")]
-            except Exception:
+            except Exception as exc:
+                log.warning("qdbrowser.cert chain unavailable host=%s: %s",
+                            host, exc)
                 chain = []
-        if store.is_pinned(host):
-            decision = store.evaluate(host, chain)
+        if st.is_pinned(host):
+            decision = st.evaluate(host, chain)
             if not decision.allow:
-                log.warning(
-                    "qdbrowser.cert reject host=%s reason=%s",
-                    host, decision.kind)
+                log.warning("qdbrowser.cert reject host=%s reason=%s",
+                            host, decision.kind)
                 try:
                     error.rejectCertificate()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Never fall through to accept. Qt rejects an
+                    # unanswered error, so returning here is still a
+                    # deny; the ERROR line makes the anomaly visible.
+                    log.error("qdbrowser.cert rejectCertificate failed "
+                              "host=%s: %s (load still denied: Qt rejects "
+                              "unanswered errors)", host, exc)
                 return
-        # Not pinned: let the default behaviour decide (Qt will show
-        # the standard certificate error UI for users to override on
-        # non-pinned hosts).
+        # Not pinned / overridden / pin matched: leave the error
+        # unanswered. QtWebEngine rejects it (no override UI exists in
+        # Qt 6 unless the app builds one; qdbrowser does not).
         log.info("qdbrowser.cert default-handling host=%s", host)
 
     try:
         signal.connect(_on_error)
     except Exception as exc:
-        log.warning("could not connect certificateError on profile: %s", exc)
+        log.error("could not connect certificateError on %s: %s", what, exc)

@@ -281,11 +281,17 @@ class MainWindow(QMainWindow):
                               type(plug).__name__, exc)
 
     def _apply_security_modules(self):
-        """Wire security interceptor and certificate pinning.
+        """Wire the security interceptor and the cert-pin store.
 
         Called once at the end of ``__init__``. Both modules are
-        fault-tolerant: if pin files don't exist or the profile lacks a
-        ``certificateError`` signal the browser still starts.
+        fault-tolerant: missing pin files mean an empty store and the
+        browser still starts.
+
+        Scope of the cert-pin control (iso2 `13` E2): it is an
+        error-path hook, connected per page in ``WebView.__init__``,
+        that hard-rejects a pinned host whose chain Chromium ALREADY
+        refused. It does not inspect CA-valid certificates and is not
+        HPKP. See ``cert_policy`` for the full limitation note.
         """
         # 1. Security interceptor (HTTPS-only, DNT, UA validation).
         try:
@@ -305,8 +311,13 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             log.warning("user-agent pinning failed: %s", exc)
 
-        # 2. Certificate pinning — install on every profile that exists
-        #    now and subscribe to future profile creations.
+        # 2. Cert-pin store. Load the admin pin files and register the
+        #    store as active. ``install_cert_policy`` is profile-level
+        #    bookkeeping only: ``certificateError`` is a page signal,
+        #    so the actual hook is connected in ``WebView.__init__``
+        #    via ``install_cert_policy_on_page``. The profile-created
+        #    subscription is kept so any future profile-level signal
+        #    would get wired too.
         try:
             from qdbrowser import webview as wv_mod
             from qdbrowser.cert_policy import install_cert_policy, load_pin_store
