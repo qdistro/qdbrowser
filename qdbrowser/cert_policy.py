@@ -419,3 +419,9 @@ def _connect_cert_error(signal, store: PinStore | None, what: str) -> None:
         signal.connect(_on_error)
     except Exception as exc:
         log.error("could not connect certificateError on %s: %s", what, exc)
+        return
+    # Wiring evidence for the VM scenario (tests/integration/vm/
+    # qdbrowser-cert-pin.bats): an unwired hook is otherwise invisible
+    # because Qt rejects unanswered errors anyway. INFO so it shows with
+    # QDBROWSER_LOG_LEVEL=INFO.
+    log.info("qdbrowser.cert hook connected on %s", what)

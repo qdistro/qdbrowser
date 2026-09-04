@@ -9,6 +9,11 @@ if [[ -z "${VM_EXEC:-}" ]]; then
                      rev-parse --show-toplevel 2>/dev/null \
                      || dirname "$(dirname "$(dirname "${BATS_TEST_FILENAME}")")")
     VM_EXEC="${_repo_root}/scripts/vm/vm-exec"
+    # qdbrowser ships no scripts/vm/; fall back to the sibling qdistro
+    # checkout's helper (the layout spin-test-vm.sh / qci assume).
+    if [[ ! -x "$VM_EXEC" && -x "${_repo_root}/../qdistro/scripts/vm/vm-exec" ]]; then
+        VM_EXEC="${_repo_root}/../qdistro/scripts/vm/vm-exec"
+    fi
 fi
 
 : "${VM_SSH_USER:=root}"
