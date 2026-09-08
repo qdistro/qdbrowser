@@ -372,7 +372,9 @@ class TestErrorPathHook:
         import logging
 
         from qdbrowser.cert_policy import (
-            PinStore, active_pin_store, install_cert_policy,
+            PinStore,
+            active_pin_store,
+            install_cert_policy,
         )
         store = PinStore(pins={"bank.example.com": ["sha256/x"]})
         with caplog.at_level(logging.INFO, logger="qdbrowser.cert"):
@@ -456,7 +458,9 @@ class TestErrorPathHook:
         """Pages built before the window loaded pins resolve the store at
         error time."""
         from qdbrowser.cert_policy import (
-            PinStore, install_cert_policy, install_cert_policy_on_page,
+            PinStore,
+            install_cert_policy,
+            install_cert_policy_on_page,
         )
         der, _ = cert_fixture
         page = _FakePage()
