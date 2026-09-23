@@ -4,24 +4,32 @@
 
 load helpers
 
+# The guest agent runs commands as root with no HOME, no XDG_RUNTIME_DIR and
+# no session bus. qdbrowser (QtWebEngine) will not start as root like that,
+# the agent socket lives under XDG_RUNTIME_DIR, and the bridge_adapter bus
+# name is on a SESSION bus. Run every browser-side command as the lingering
+# desktop user (admin, uid 1000) with its real session bus, headless.
+QDB_AS_USER="runuser -u admin -- env HOME=/home/admin XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS='--no-sandbox --disable-gpu --headless'"
+
+QDB_SMOKE_RULE=/etc/polkit-1/rules.d/49-qdbrowser-smoke-bats.rules
+
 setup_file() {
     : "${VM_NAME:?VM_NAME must be set}"
 }
 
 @test "qdbrowser launches with agent_control" {
     vm_run "pkill -f '^python3 -m qdbrowser' || true"
-    # Smoke exercises click_at/type_text; production defaults deny those
-    # until allowed_methods lists them. Handshake is sent by the scenario
-    # client.
-    vm_run "mkdir -p \$HOME/.config/qdbrowser && printf '%s\\n' '[agent_control]' 'allowed_methods = [\"click_at\", \"type_text\"]' > \$HOME/.config/qdbrowser/config.toml"
-    vm_run "QDBROWSER_AGENT_CONTROL=1 setsid -f python3 -m qdbrowser >/tmp/qdb.log 2>&1 < /dev/null"
-    sleep 3
-    vm_run "test -S /run/user/\$(id -u)/qdbrowser-agent-\$(id -u).sock"
+    # Smoke exercises click_at/type_text and reads the result back with
+    # eval_js; production defaults deny all three until allowed_methods
+    # lists them. Handshake is sent by the scenario client.
+    vm_run "install -d -o admin -m 0700 /home/admin/.config/qdbrowser && printf '%s\\n' '[agent_control]' 'allowed_methods = [\"click_at\", \"type_text\", \"eval_js\"]' > /home/admin/.config/qdbrowser/config.toml && chown admin /home/admin/.config/qdbrowser/config.toml"
+    vm_run "cd /home/admin && $QDB_AS_USER QDBROWSER_AGENT_CONTROL=1 setsid -f python3 -m qdbrowser --no-restore >/tmp/qdb.log 2>&1 < /dev/null"
+    vm_run "for i in \$(seq 1 40); do test -S /run/user/1000/qdbrowser-agent-1000.sock && exit 0; sleep 1; done; cat /tmp/qdb.log; exit 1"
     [ "$status" -eq 0 ]
 }
 
 @test "open_tab / navigate / get_url RPC" {
-    vm_run "cd /opt/qdbrowser && python3 tests/integration/scenarios/runner.py open_tab_and_navigate 2>&1 | tee /tmp/qdb-scenarios.log"
+    vm_run "cd /opt/qdbrowser && $QDB_AS_USER python3 tests/integration/scenarios/runner.py open_tab_and_navigate 2>&1 | tee /tmp/qdb-scenarios.log"
     [ "$status" -eq 0 ]
     [[ "$output" == *"qdbrowser.scenario.pass"* ]]
     [[ "$output" == *"name=open_tab_and_navigate"* ]]
@@ -31,14 +39,14 @@ setup_file() {
 }
 
 @test "click_at + type_text RPC" {
-    vm_run "cd /opt/qdbrowser && python3 tests/integration/scenarios/runner.py click_and_type"
+    vm_run "cd /opt/qdbrowser && $QDB_AS_USER python3 tests/integration/scenarios/runner.py click_and_type 2>&1"
     [ "$status" -eq 0 ]
     [[ "$output" == *"qdbrowser.scenario.pass"* ]]
     [[ "$output" == *"name=click_and_type"* ]]
 }
 
 @test "list_tabs / close_tab RPC" {
-    vm_run "cd /opt/qdbrowser && python3 tests/integration/scenarios/runner.py split_pane"
+    vm_run "cd /opt/qdbrowser && $QDB_AS_USER python3 tests/integration/scenarios/runner.py split_pane 2>&1"
     [ "$status" -eq 0 ]
     [[ "$output" == *"qdbrowser.scenario.pass"* ]]
 }
@@ -57,7 +65,7 @@ setup_file() {
     # seconds because it has to probe the daemon set first.
     vm_run "sleep 2 && pid=\$(pgrep -f 'python3 -m qdbrowser' | head -1) && \
             test -n \"\$pid\" && \
-            gdbus call --session \
+            $QDB_AS_USER gdbus call --session \
                 --dest org.freedesktop.DBus \
                 --object-path /org/freedesktop/DBus \
                 --method org.freedesktop.DBus.NameHasOwner \
@@ -68,7 +76,7 @@ setup_file() {
 
 @test "TabsList round-trips over D-Bus" {
     vm_run "pid=\$(pgrep -f 'python3 -m qdbrowser' | head -1) && \
-            gdbus call --session \
+            $QDB_AS_USER gdbus call --session \
                 --dest org.qdistro.QdBrowser.pid\$pid \
                 --object-path /org/qdistro/QdBrowser \
                 --method org.qdistro.QdBrowser1.TabsList 2>&1 | tee /tmp/qdb-tabs.log"
@@ -81,12 +89,18 @@ setup_file() {
 }
 
 @test "TabsOpen via D-Bus emits a TabAdded signal" {
+    # tabs.open is auth_admin_keep: a non-interactive caller with no polkit
+    # agent is (correctly) denied. Grant it to admin for this test only via a
+    # test-scoped rule, removed again below and in teardown_file. 0644: the
+    # guest's root umask is 077 and polkitd cannot read a 0600 rule.
+    vm_run "printf '%s\\n' 'polkit.addRule(function(action, subject) {' '  if (action.id == \"org.qdistro.qdbrowser.tabs.open\" && subject.user == \"admin\") return polkit.Result.YES;' '});' > $QDB_SMOKE_RULE && chmod 0644 $QDB_SMOKE_RULE && sleep 2"
+    [ "$status" -eq 0 ]
     # Subscribe to the signal in the background, then fire TabsOpen.
     vm_run "pid=\$(pgrep -f 'python3 -m qdbrowser' | head -1) && \
-            (gdbus monitor --session --dest org.qdistro.QdBrowser.pid\$pid \
+            ($QDB_AS_USER gdbus monitor --session --dest org.qdistro.QdBrowser.pid\$pid \
                 >/tmp/qdb-signals.log 2>&1 &) && \
             sleep 1 && \
-            gdbus call --session \
+            $QDB_AS_USER gdbus call --session \
                 --dest org.qdistro.QdBrowser.pid\$pid \
                 --object-path /org/qdistro/QdBrowser \
                 --method org.qdistro.QdBrowser1.TabsOpen \
@@ -95,13 +109,14 @@ setup_file() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"TabAdded"* ]]
     [[ "$output" == *"example.invalid"* ]]
+    vm_run "rm -f $QDB_SMOKE_RULE"
 }
 
 @test "MediaStatus is reachable without auth (read-only action)" {
     # Read-only action — allow:yes in the polkit policy. No auth
     # prompt should fire even without an agent helper running.
     vm_run "pid=\$(pgrep -f 'python3 -m qdbrowser' | head -1) && \
-            gdbus call --session \
+            $QDB_AS_USER gdbus call --session \
                 --dest org.qdistro.QdBrowser.pid\$pid \
                 --object-path /org/qdistro/QdBrowser \
                 --method org.qdistro.QdBrowser1.MediaStatus 2>&1"
@@ -111,5 +126,6 @@ setup_file() {
 }
 
 teardown_file() {
+    vm_run "rm -f $QDB_SMOKE_RULE"
     vm_run "pkill -f '^python3 -m qdbrowser' || true"
 }

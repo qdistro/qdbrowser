@@ -30,3 +30,13 @@ def test_search_query_goes_to_engine(window, fresh_config):
         wv.navigate("hello world")
         assert set_url.call_args[0][0].toString().startswith(
             "https://search.invalid/?q=hello")
+
+
+def test_data_url_with_space_is_not_a_search(window):
+    """A data: URL has no "://" and often contains spaces; it must load as
+    a URL, not be sent (content and all) to the search engine."""
+    wv = window._active_webview
+    url = "data:text/html;charset=utf-8,<body><h1 id='hi'>Hello</h1></body>"
+    with patch.object(wv.view, "setUrl") as set_url:
+        wv.navigate(url)
+        assert set_url.call_args[0][0].scheme() == "data"
