@@ -91,9 +91,13 @@ setup_file() {
 @test "TabsOpen via D-Bus emits a TabAdded signal" {
     # tabs.open is auth_admin_keep: a non-interactive caller with no polkit
     # agent is (correctly) denied. Grant it to admin for this test only via a
-    # test-scoped rule, removed again below and in teardown_file. 0644: the
-    # guest's root umask is 077 and polkitd cannot read a 0600 rule.
-    vm_run "printf '%s\\n' 'polkit.addRule(function(action, subject) {' '  if (action.id == \"org.qdistro.qdbrowser.tabs.open\" && subject.user == \"admin\") return polkit.Result.YES;' '});' > $QDB_SMOKE_RULE && chmod 0644 $QDB_SMOKE_RULE && sleep 2"
+    # test-scoped rule, removed again below and in teardown_file.
+    # Written to a temp name, made 0644, then renamed into place: the guest's
+    # root umask is 077, and polkitd (inotify) loads a *.rules file the moment
+    # it is created — a 0600 file is logged "Error loading script" and a later
+    # chmod does not trigger a reload (seen in bats-20260923T081626Z-363501).
+    # Then wait until pkcheck for an admin process actually says yes.
+    vm_run "printf '%s\\n' 'polkit.addRule(function(action, subject) {' '  if (action.id == \"org.qdistro.qdbrowser.tabs.open\" && subject.user == \"admin\") return polkit.Result.YES;' '});' > $QDB_SMOKE_RULE.tmp && chmod 0644 $QDB_SMOKE_RULE.tmp && mv -f $QDB_SMOKE_RULE.tmp $QDB_SMOKE_RULE && for i in \$(seq 1 50); do runuser -u admin -- sh -c 'sleep 30 & p=\$!; st=\$(cut -d\" \" -f22 /proc/\$p/stat); pkcheck --action-id org.qdistro.qdbrowser.tabs.open --process \$p,\$st >/dev/null 2>&1; rc=\$?; kill \$p; exit \$rc' && exit 0; sleep 0.2; done; exit 1"
     [ "$status" -eq 0 ]
     # Subscribe to the signal in the background, then fire TabsOpen.
     vm_run "pid=\$(pgrep -f 'python3 -m qdbrowser' | head -1) && \
@@ -109,7 +113,7 @@ setup_file() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"TabAdded"* ]]
     [[ "$output" == *"example.invalid"* ]]
-    vm_run "rm -f $QDB_SMOKE_RULE"
+    vm_run "rm -f $QDB_SMOKE_RULE $QDB_SMOKE_RULE.tmp"
 }
 
 @test "MediaStatus is reachable without auth (read-only action)" {
@@ -126,6 +130,6 @@ setup_file() {
 }
 
 teardown_file() {
-    vm_run "rm -f $QDB_SMOKE_RULE"
+    vm_run "rm -f $QDB_SMOKE_RULE $QDB_SMOKE_RULE.tmp"
     vm_run "pkill -f '^python3 -m qdbrowser' || true"
 }
