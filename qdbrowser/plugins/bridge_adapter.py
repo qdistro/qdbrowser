@@ -983,9 +983,12 @@ class _DispatchHelper:
 
     The recv thread calls :meth:`call_on_main_thread` which posts a
     callable into a queue and waits (with timeout) for the main thread
-    to execute it. The main thread is notified via a
-    ``QTimer.singleShot(0, ...)`` (always safe to call cross-thread in
-    Qt 6) and drains the queue.
+    to execute it. The main thread is woken by a signal on a QObject
+    whose thread affinity is the QApplication's thread, so the queued
+    delivery runs there. (A ``QTimer.singleShot(0, fn)`` posted from the
+    recv thread belongs to THAT thread, which has no event loop, so it
+    never fired and every bridge call timed out.) Called on the main
+    thread itself, the signal is delivered directly — no deadlock.
 
     If no Qt event loop is running (e.g. unit tests) the helper falls
     back to direct invocation in the calling thread.
@@ -994,6 +997,30 @@ class _DispatchHelper:
     def __init__(self):
         self._queue: list = []
         self._lock = threading.Lock()
+        self._waker = None
+
+    def _get_waker(self):
+        """Lazily build the main-thread waker (needs a QApplication)."""
+        with self._lock:
+            if self._waker is None:
+                from PyQt6.QtCore import QObject, pyqtSignal
+                from PyQt6.QtWidgets import QApplication
+
+                helper = self
+
+                class _Waker(QObject):
+                    wake = pyqtSignal()
+
+                    def drain(self):
+                        helper._drain()
+
+                waker = _Waker()
+                # Affinity decides where queued slots run: pin it to the
+                # GUI thread even when first used from the recv thread.
+                waker.moveToThread(QApplication.instance().thread())
+                waker.wake.connect(waker.drain)
+                self._waker = waker
+            return self._waker
 
     def _qt_app_running(self) -> bool:
         """Return True if a QApplication exists (i.e. we have a real
@@ -1031,10 +1058,9 @@ class _DispatchHelper:
         with self._lock:
             self._queue.append(_run)
 
-        # Schedule a drain on the main thread.
+        # Wake the main thread to drain the queue.
         try:
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(0, self._drain)
+            self._get_waker().wake.emit()
         except Exception:
             # Fallback: execute directly (e.g. no QApp).
             _run()

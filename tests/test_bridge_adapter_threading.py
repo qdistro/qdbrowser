@@ -600,3 +600,31 @@ def test_resolve_sender_start_time_handles_spaces_in_comm(monkeypatch):
                         lambda *a, **kw: _FakeFile(fake_stat))
     st = ba.BridgeAdapterPlugin._resolve_sender_start_time(4242)
     assert st == 123456
+
+
+def test_call_on_main_thread_from_plain_thread_runs_on_gui_thread(qapp, qtbot):
+    """The recv thread is a plain threading.Thread with no Qt event loop.
+    A QTimer.singleShot(0, fn) posted from it lives in THAT thread and never
+    fires, so every D-Bus call timed out ("main-thread dispatch timed out")
+    in the VM smoke bats. The wake-up must be delivered to the GUI thread."""
+    helper = ba._DispatchHelper()
+    gui_thread = threading.current_thread()
+    out: dict = {}
+
+    def worker():
+        try:
+            out["value"] = helper.call_on_main_thread(
+                lambda: threading.current_thread(), timeout=3.0)
+        except Exception as exc:  # pragma: no cover - asserted below
+            out["exc"] = exc
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    qtbot.waitUntil(lambda: not t.is_alive(), timeout=5000)
+    assert "exc" not in out, out.get("exc")
+    assert out["value"] is gui_thread
+
+
+def test_call_on_main_thread_from_gui_thread_does_not_deadlock(qapp):
+    helper = ba._DispatchHelper()
+    assert helper.call_on_main_thread(lambda: 42, timeout=2.0) == 42

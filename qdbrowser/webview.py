@@ -469,7 +469,10 @@ class WebView(QWidget):
         url = url.strip()
         if not url:
             return
-        if "://" not in url and not url.startswith("about:"):
+        # data: URLs carry no "://" and routinely contain spaces; without
+        # this they were sent, content and all, to the search engine.
+        if ("://" not in url and not url.startswith("about:")
+                and not url.lower().startswith("data:")):
             if "." in url and " " not in url:
                 url = "https://" + url
             else:
