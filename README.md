@@ -1,3 +1,9 @@
+> **Moved.** This repository is frozen and archived. Development continues in
+> [qdistro/qdistro](https://github.com/qdistro/qdistro/tree/main/qdbrowser) under
+> `qdbrowser/`. Its full history up to `45e6edc23` is also preserved there on
+> branch [`legacy/multirepo/qdbrowser`](https://github.com/qdistro/qdistro/tree/legacy/multirepo/qdbrowser).
+> This repository was renamed from `qdbrowser` to `legacy-qdbrowser`.
+
 # qdbrowser
 
 A Qt-based web browser, sibling of [qterminator](../qterminator) and [qdshell](../qdshell).
